@@ -1,0 +1,21 @@
+{
+  "name": "maxp",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Playing with fractals",
+  "author": "Kyle Maxwell",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}
