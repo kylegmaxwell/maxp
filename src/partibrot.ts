@@ -1,4 +1,4 @@
-import type { Renderer } from './renderer';
+import { drawPixels, type Renderable } from './renderer';
 
 /** Ease in/out animation retiming (http://gizma.com/easing/). */
 function easeInOutQuad(t: number, b: number, c: number, d: number): number {
@@ -23,7 +23,7 @@ const STRIDE = 4; // per particle: x, y, start a, start b
  * and the frames in between interpolate with easing.
  * The paint-mode option from the original is not ported.
  */
-export class Partibrot implements Renderer {
+export class Partibrot implements Renderable {
   private readonly steps = 10;
   private readonly rstep: number;
   private readonly cstep: number;
@@ -114,7 +114,12 @@ export class Partibrot implements Renderer {
     }
   }
 
-  render(pixels: Uint8ClampedArray): void {
+  /** Implements `Renderable.render`. */
+  render(ctx: CanvasRenderingContext2D): void {
+    drawPixels(ctx, this.width, this.height, (pixels) => this.fill(pixels));
+  }
+
+  private fill(pixels: Uint8ClampedArray): void {
     this.checkIter();
     const { width, height, t } = this;
     const h4 = (height - 1) / 4;

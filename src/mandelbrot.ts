@@ -1,4 +1,4 @@
-import type { Renderer } from './renderer';
+import { drawPixels, type Renderable } from './renderer';
 
 /**
  * Escape-time Mandelbrot renderer, ported from
@@ -6,15 +6,20 @@ import type { Renderer } from './renderer';
  *
  * The viewport is the square from <-2,-2> to <2,2>.
  */
-export class Mandelbrot implements Renderer {
+export class Mandelbrot implements Renderable {
   constructor(
     public width: number,
     public height: number,
     public iter: number,
   ) {}
 
+  /** Implements `Renderable.render`. */
+  render(ctx: CanvasRenderingContext2D): void {
+    drawPixels(ctx, this.width, this.height, (pixels) => this.fill(pixels));
+  }
+
   /** Write grayscale RGBA pixel data (0 to 255) into `pixels`. */
-  render(pixels: Uint8ClampedArray): void {
+  private fill(pixels: Uint8ClampedArray): void {
     const rstep = 4 / (this.height - 1);
     const cstep = 4 / (this.width - 1);
     let index = 0;

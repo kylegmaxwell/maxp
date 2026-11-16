@@ -1,4 +1,4 @@
-import type { Renderer } from './renderer';
+import { drawPixels, type Renderable } from './renderer';
 
 /**
  * Buddhabrot: a histogram of the points visited by orbits that escape,
@@ -6,14 +6,19 @@ import type { Renderer } from './renderer';
  *
  * The paint-mode option from the original is not ported.
  */
-export class Buddhabrot implements Renderer {
+export class Buddhabrot implements Renderable {
   constructor(
     public width: number,
     public height: number,
     public iter: number,
   ) {}
 
-  render(pixels: Uint8ClampedArray): void {
+  /** Implements `Renderable.render`. */
+  render(ctx: CanvasRenderingContext2D): void {
+    drawPixels(ctx, this.width, this.height, (pixels) => this.fill(pixels));
+  }
+
+  private fill(pixels: Uint8ClampedArray): void {
     const { width, height } = this;
     const h4 = (height - 1) / 4;
     const w4 = (width - 1) / 4;
