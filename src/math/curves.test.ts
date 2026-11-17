@@ -1,6 +1,6 @@
 import { Vector2 } from 'three';
 import { describe, expect, it } from 'vitest';
-import { catmullRomSegment, splitBezier } from './curves';
+import { catmullRomSegment, easeInOutQuad, splitBezier } from './curves';
 
 /** Evaluate a cubic Bezier at u in [0, 1]. */
 function evalBezier(p0: Vector2, p1: Vector2, p2: Vector2, p3: Vector2, u: number): Vector2 {
@@ -69,6 +69,16 @@ describe('catmullRomSegment', () => {
     expect(seg).not.toBeNull();
     expect(seg![0]).toEqual(v1);
     expect(seg![3]).toEqual(v2);
+  });
+});
+
+describe('easeInOutQuad', () => {
+  it('hits start, midpoint, and end symmetrically', () => {
+    expect(easeInOutQuad(0, 0, 1, 1)).toBe(0);
+    expect(easeInOutQuad(0.5, 0, 1, 1)).toBe(0.5);
+    expect(easeInOutQuad(1, 0, 1, 1)).toBe(1);
+    // Symmetric around 0.5
+    expect(easeInOutQuad(0.25, 0, 1, 1) + easeInOutQuad(0.75, 0, 1, 1)).toBeCloseTo(1);
   });
 });
 

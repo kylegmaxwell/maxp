@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buddhabrotCounts } from './buddhabrot';
+import { buddhabrotCounts, BuddhabrotGrid } from './buddhabrot';
 
 describe('buddhabrotCounts', () => {
   it('has one count per pixel and no negative or non-finite values', () => {
@@ -32,6 +32,26 @@ describe('buddhabrotCounts', () => {
     for (let i = 0; i < lower.length; i++) {
       expect(higher[i]).toBeGreaterThanOrEqual(lower[i]);
     }
+  });
+});
+
+describe('BuddhabrotGrid', () => {
+  it('log-normalizes counts to [0, 1] with peak 1 and supports reset', () => {
+    const grid = new BuddhabrotGrid(9, 9);
+    grid.advanceTo(15);
+    expect(grid.steps).toBe(15);
+
+    let max = 0;
+    for (const v of grid.values) {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+      if (v > max) max = v;
+    }
+    expect(max).toBeCloseTo(1);
+
+    grid.reset();
+    expect(grid.steps).toBe(0);
+    expect(grid.values.every((v) => v === 0)).toBe(true);
   });
 });
 

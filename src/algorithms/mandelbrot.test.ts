@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { escapeIteration, mandelbrotEscape } from './mandelbrot';
+import { escapeIteration, mandelbrotEscape, MandelbrotGrid } from './mandelbrot';
 
 describe('escapeIteration', () => {
   it('never escapes for points in the set', () => {
@@ -53,6 +53,25 @@ describe('mandelbrotEscape', () => {
         expect(out[r * size + c]).toBe(out[(size - 1 - r) * size + c]);
       }
     }
+  });
+});
+
+describe('MandelbrotGrid', () => {
+  it('normalizes escape counts to [0, 1] and tracks steps / reset', () => {
+    const grid = new MandelbrotGrid(5, 5);
+    expect(grid.steps).toBe(0);
+
+    grid.advanceTo(20);
+    expect(grid.steps).toBe(20);
+    expect(grid.values[2 * 5 + 2]).toBe(0); // center c = 0 never escapes -> 0
+    for (const v of grid.values) {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
+    }
+
+    grid.reset();
+    expect(grid.steps).toBe(0);
+    expect(grid.values.every((v) => v === 0)).toBe(true);
   });
 });
 
