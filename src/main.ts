@@ -22,6 +22,10 @@ const params: { mode: Mode; iter: number; fps: number; play: boolean } = {
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
+// Offscreen buffer holding the latest base fractal render so dragging the trace
+// overlay composites at 60fps without re-running the underlying simulation.
+const baseCanvas = document.createElement('canvas');
+const baseCtx = baseCanvas.getContext('2d')!;
 
 let renderer: Renderable;
 let tracePoint: [number, number] | null = null;
@@ -42,13 +46,18 @@ function createRenderable(mode: Mode, size: number): Renderable {
   }
 }
 
-function renderFrame(): void {
-  renderer.iter = params.iter;
-  renderer.render(ctx);
+function composeFrame(): void {
+  ctx.drawImage(baseCanvas, 0, 0);
   if (trace) {
     trace.iter = params.iter;
     trace.render(ctx);
   }
+}
+
+function renderFrame(): void {
+  renderer.iter = params.iter;
+  renderer.render(baseCtx);
+  composeFrame();
 }
 
 /** Start over: new canvas size, new renderer, and a full render at `params.iter`. */
@@ -57,10 +66,12 @@ function rebuild(): void {
   const size = Math.floor(Math.min(window.innerWidth, window.innerHeight));
   canvas.width = size;
   canvas.height = size;
+  baseCanvas.width = size;
+  baseCanvas.height = size;
 
   // Linebrot fades what is already on the canvas, so give it a black backdrop
-  ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, size, size);
+  baseCtx.fillStyle = '#000';
+  baseCtx.fillRect(0, 0, size, size);
 
   renderer = createRenderable(params.mode, size);
   trace = tracePoint ? new PathView(tracePoint[0], tracePoint[1], size, size, params.iter) : null;
@@ -134,16 +145,38 @@ gui.add(
     clearTrace: () => {
       tracePoint = null;
       trace = null;
-      renderFrame();
+      composeFrame();
     },
   },
   'clearTrace',
 );
 
-canvas.addEventListener('click', (e: MouseEvent) => {
+let dragging = false;
+
+function updateTrace(e: PointerEvent): void {
   tracePoint = pixelToComplex(e.offsetX, e.offsetY, canvas.width, canvas.height);
   trace = new PathView(tracePoint[0], tracePoint[1], canvas.width, canvas.height, params.iter);
-  renderFrame();
+  composeFrame();
+}
+
+canvas.addEventListener('pointerdown', (e: PointerEvent) => {
+  if (e.button !== 0) return;
+  dragging = true;
+  canvas.setPointerCapture(e.pointerId);
+  updateTrace(e);
+});
+
+canvas.addEventListener('pointermove', (e: PointerEvent) => {
+  if (!dragging) return;
+  updateTrace(e);
+});
+
+canvas.addEventListener('pointerup', () => {
+  dragging = false;
+});
+
+canvas.addEventListener('pointercancel', () => {
+  dragging = false;
 });
 
 canvas.addEventListener('contextmenu', (e: MouseEvent) => {
@@ -151,7 +184,7 @@ canvas.addEventListener('contextmenu', (e: MouseEvent) => {
   if (!trace) return;
   tracePoint = null;
   trace = null;
-  renderFrame();
+  composeFrame();
 });
 
 window.addEventListener('resize', rebuild);
