@@ -3,6 +3,7 @@ import { BuddhabrotGrid } from './algorithms/buddhabrot';
 import { MandelbrotGrid } from './algorithms/mandelbrot';
 import { GridView } from './views/gridView';
 import { ParticleView } from './views/particleView';
+import { PathView, pixelToComplex } from './views/pathView';
 import type { Renderable } from './views/renderable';
 
 const MODES = ['mandelbrot', 'buddhabrot', 'partibrot', 'linebrot', 'vectorbrot'] as const;
@@ -23,6 +24,8 @@ const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
 
 let renderer: Renderable;
+let tracePoint: [number, number] | null = null;
+let trace: PathView | null = null;
 
 function createRenderable(mode: Mode, size: number): Renderable {
   switch (mode) {
@@ -39,6 +42,15 @@ function createRenderable(mode: Mode, size: number): Renderable {
   }
 }
 
+function renderFrame(): void {
+  renderer.iter = params.iter;
+  renderer.render(ctx);
+  if (trace) {
+    trace.iter = params.iter;
+    trace.render(ctx);
+  }
+}
+
 /** Start over: new canvas size, new renderer, and a full render at `params.iter`. */
 function rebuild(): void {
   // The viewport is square, so use the shorter window side
@@ -51,7 +63,8 @@ function rebuild(): void {
   ctx.fillRect(0, 0, size, size);
 
   renderer = createRenderable(params.mode, size);
-  renderer.render(ctx);
+  trace = tracePoint ? new PathView(tracePoint[0], tracePoint[1], size, size, params.iter) : null;
+  renderFrame();
 }
 
 /**
@@ -61,8 +74,7 @@ function rebuild(): void {
 function stepIter(): boolean {
   if (params.iter >= MAX_ITER) return false;
   params.iter++;
-  renderer.iter = params.iter;
-  renderer.render(ctx);
+  renderFrame();
   iterController.updateDisplay();
   return params.iter < MAX_ITER;
 }
@@ -117,6 +129,30 @@ gui.add(
   'step',
 );
 gui.add(params, 'fps', 1, 60, 1);
+gui.add(
+  {
+    clearTrace: () => {
+      tracePoint = null;
+      trace = null;
+      renderFrame();
+    },
+  },
+  'clearTrace',
+);
+
+canvas.addEventListener('click', (e: MouseEvent) => {
+  tracePoint = pixelToComplex(e.offsetX, e.offsetY, canvas.width, canvas.height);
+  trace = new PathView(tracePoint[0], tracePoint[1], canvas.width, canvas.height, params.iter);
+  renderFrame();
+});
+
+canvas.addEventListener('contextmenu', (e: MouseEvent) => {
+  e.preventDefault();
+  if (!trace) return;
+  tracePoint = null;
+  trace = null;
+  renderFrame();
+});
 
 window.addEventListener('resize', rebuild);
 rebuild();
