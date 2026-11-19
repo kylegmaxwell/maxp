@@ -51,6 +51,7 @@ export class LevelView implements Renderable {
    * @param iter Current GUI iteration counter
    * @param steps Sub-steps per Mandelbrot iteration (`1` for grid modes, `10` for particle modes)
    * @param targetLevel Optional explicit contour level `n` (overrides sampling at `(cRe, cIm)`)
+   * @param res Base coarse-grid resolution multiplier (default `1` => `128` coarse cells)
    */
   constructor(
     public readonly cRe: number | null,
@@ -60,6 +61,7 @@ export class LevelView implements Renderable {
     public iter: number,
     public readonly steps = 1,
     public targetLevel?: number,
+    public res = 1,
   ) {
     this.w4 = (width - 1) / 4;
     this.h4 = (height - 1) / 4;
@@ -90,10 +92,10 @@ export class LevelView implements Renderable {
 
   /**
    * Extract and bridge the coarse-to-fine Marching Squares contours at the active level
-   * into a single closed loop (defaults to `128 * 4 = 512` fine cells across `[-2, 2]`).
+   * into a single closed loop (defaults to `Math.round(128 * res) * 4` fine cells across `[-2, 2]`).
    */
   extractContours(
-    coarseCells = 128,
+    coarseCells = Math.max(16, Math.round(128 * this.res)),
     subdiv = 4,
   ): { contours: Contour[]; primary: Contour | null; level: number } {
     const maxIter = this.effectiveIter;

@@ -14,10 +14,11 @@ type Mode = (typeof MODES)[number];
 const MAX_ITER = 500;
 
 // Values controlled by the GUI
-const params: { mode: Mode; iter: number; level: number; fps: number; play: boolean } = {
+const params: { mode: Mode; iter: number; level: number; res: number; fps: number; play: boolean } = {
   mode: 'mandelbrot',
   iter: 50,
   level: 0,
+  res: 1,
   fps: 10,
   play: false,
 };
@@ -43,10 +44,19 @@ function createTrace(width: number, height: number): PathView | LevelView | null
   }
   const steps = params.mode === 'partibrot' ? 10 : 1;
   if (tracePoint) {
-    return new LevelView(tracePoint[0], tracePoint[1], width, height, params.iter, steps);
+    return new LevelView(
+      tracePoint[0],
+      tracePoint[1],
+      width,
+      height,
+      params.iter,
+      steps,
+      undefined,
+      params.res,
+    );
   }
   if (params.level > 0) {
-    return new LevelView(null, null, width, height, params.iter, steps, params.level);
+    return new LevelView(null, null, width, height, params.iter, steps, params.level, params.res);
   }
   return null;
 }
@@ -149,11 +159,11 @@ gui.add(params, 'mode', [...MODES]).onChange(rebuild);
 const iterController = gui.add(params, 'iter', 1, MAX_ITER, 1).onFinishChange(rebuild);
 const levelController = gui.add(params, 'level', 0, MAX_ITER/10, 1).onChange((n: number) => {
   tracePoint = null;
-  const steps = params.mode === 'partibrot' ? 10 : 1;
-  trace =
-    !isLineMode(params.mode) && n > 0
-      ? new LevelView(null, null, canvas.width, canvas.height, params.iter, steps, n)
-      : null;
+  trace = !isLineMode(params.mode) && n > 0 ? createTrace(canvas.width, canvas.height) : null;
+  composeFrame();
+});
+gui.add(params, 'res', 0.5, 4, 0.5).onFinishChange(() => {
+  trace = createTrace(canvas.width, canvas.height);
   composeFrame();
 });
 const playController = gui

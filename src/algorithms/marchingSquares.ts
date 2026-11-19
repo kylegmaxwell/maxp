@@ -343,7 +343,10 @@ export class BandContourGrid {
           }
         }
 
-        if (vMin <= level && vMax >= level) {
+        // Seed if coarse vertices straddle `level`, OR if the neighborhood has a steep
+        // filament shoulder (`vMax >= 6` and `vMax - vMin >= 2.5`) whose fine core may reach `level`
+        const hasFilament = vMax >= 6 && vMax - vMin >= 2.5;
+        if (vMin <= level && (vMax >= level || hasFilament)) {
           enqueue(cr, cc);
         }
       }
@@ -609,13 +612,11 @@ export function connectAndRefineContours(
   const main = largestContour(contours);
   if (!main) return null;
 
-  // Put `main` at index 0, followed by non-degenerate satellite islands (>= 6 vertices
-  // to skip single-cell 4-vertex diamond noise at high levels)
-  const minVerts = contours.length > 12 ? 6 : 3;
+  // Put `main` at index 0, followed by all non-degenerate satellite islands
   const loops: Array<Array<[number, number]>> = [
     ensureCCW(main.points),
     ...contours
-      .filter((c) => c !== main && c.points.length >= minVerts)
+      .filter((c) => c !== main && c.points.length >= 3)
       .map((c) => ensureCCW(c.points)),
   ];
 
