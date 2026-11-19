@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { mandelbrotSmooth } from './mandelbrot';
+import { mandelbrotSmooth, smoothEscape } from './mandelbrot';
 import {
+  BandContourGrid,
   closestContour,
   connectAndRefineContours,
   contourPerimeter,
@@ -135,6 +136,54 @@ describe('marchingSquares', () => {
       const [x0, y0] = pts[i];
       const [x1, y1] = pts[(i + 1) % pts.length];
       expect(Math.hypot(x1 - x0, y1 - y0)).toBeLessThan(0.16);
+    }
+  });
+
+  it('BandContourGrid matches full dense Marching Squares while evaluating only the active band', () => {
+    const field = (re: number, im: number) => 2.5 - Math.hypot(re - 0.2, im + 0.1);
+    const band = new BandContourGrid(field, 16, 4); // 65x65 fine grid
+    const bandContours = band.extract(1.5);
+
+    const fullGrid = new Float32Array(65 * 65);
+    const step = 4 / 64;
+    for (let r = 0; r < 65; r++) {
+      for (let c = 0; c < 65; c++) {
+        fullGrid[r * 65 + c] = field(-2 + c * step, -2 + r * step);
+      }
+    }
+    const fullContours = marchingSquares(fullGrid, 65, 65, 1.5);
+
+    expect(bandContours).toHaveLength(1);
+    expect(fullContours).toHaveLength(1);
+    expect(bandContours[0].points.length).toBe(fullContours[0].points.length);
+    expect(contourPerimeter(bandContours[0])).toBeCloseTo(contourPerimeter(fullContours[0]), 5);
+
+    // Most fine grid entries outside the active band should remain unevaluated (NaN)
+    let evaluated = 0;
+    for (let i = 0; i < band.fineValues.length; i++) {
+      if (!Number.isNaN(band.fineValues[i])) evaluated++;
+    }
+    expect(evaluated).toBeLessThan(band.fineValues.length * 0.6);
+  });
+
+  it('produces no long cross-set chord segments on Mandelbrot levels 10..50', () => {
+    const maxIter = 55;
+    const field = (re: number, im: number) => smoothEscape(re, im, maxIter);
+    const band = new BandContourGrid(field, 64, 4);
+
+    for (const level of [10, 25, 40, 50]) {
+      const raw = band.extract(level);
+      const connected = connectAndRefineContours(raw, level, field, 4 / band.fineCells);
+      expect(connected).not.toBeNull();
+      const pts = connected!.points;
+      let maxSeg = 0;
+      for (let i = 0; i < pts.length; i++) {
+        const [x0, y0] = pts[i];
+        const [x1, y1] = pts[(i + 1) % pts.length];
+        const seg = Math.hypot(x1 - x0, y1 - y0);
+        if (seg > maxSeg) maxSeg = seg;
+      }
+      expect(maxSeg).toBeLessThan(0.15);
     }
   });
 });

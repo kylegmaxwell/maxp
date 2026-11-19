@@ -50,7 +50,7 @@ describe('LevelView', () => {
     const clickRe = 0.8;
     const clickIm = 0.6;
     const view = new LevelView(clickRe, clickIm, 129, 129, 20, 1);
-    const { contours, primary } = view.extractContours(65);
+    const { contours, primary } = view.extractContours(32, 4);
 
     expect(contours.length).toBeGreaterThan(0);
     expect(primary).not.toBeNull();
@@ -72,7 +72,7 @@ describe('LevelView', () => {
   it('extracts the explicit nth level contour without a click point', () => {
     const view = new LevelView(null, null, 129, 129, 10, 1, 5);
     expect(view.level).toBe(5);
-    const { contours, primary } = view.extractContours(65);
+    const { contours, primary } = view.extractContours(32, 4);
     expect(contours).toHaveLength(1);
     expect(primary).toBe(contours[0]);
     expect(primary!.closed).toBe(true);

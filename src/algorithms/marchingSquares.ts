@@ -55,7 +55,23 @@ export function marchingSquares(
   const cols = width - 1;
   const rows = height - 1;
   if (cols <= 0 || rows <= 0) return [];
+  return extractFromIndexedCells(values, width, height, level);
+}
 
+/**
+ * Core Marching Squares extractor operating either on all cells of `values`
+ * or on an explicit list of active coarse cell blocks `(cr, cc)` subdivided by `subdiv`.
+ */
+function extractFromIndexedCells(
+  values: Float32Array | Float64Array,
+  width: number,
+  height: number,
+  level: number,
+  activeCoarseCells?: ReadonlyArray<readonly [number, number]>,
+  subdiv = 1,
+): Contour[] {
+  const cols = width - 1;
+  const rows = height - 1;
   const cstep = 4 / cols;
   const rstep = 4 / rows;
   const vOffset = height * cols;
@@ -120,35 +136,51 @@ export function marchingSquares(
     listB.push(idA);
   };
 
-  for (let r = 0; r < rows; r++) {
+  const processCell = (r: number, c: number): void => {
     const rowOffset = r * width;
     const nextRowOffset = (r + 1) * width;
-    for (let c = 0; c < cols; c++) {
-      const v0 = values[rowOffset + c];
-      const v1 = values[rowOffset + c + 1];
-      const v2 = values[nextRowOffset + c + 1];
-      const v3 = values[nextRowOffset + c];
+    const v0 = values[rowOffset + c];
+    const v1 = values[rowOffset + c + 1];
+    const v2 = values[nextRowOffset + c + 1];
+    const v3 = values[nextRowOffset + c];
 
-      const mask =
-        (v0 >= level ? 8 : 0) |
-        (v1 >= level ? 4 : 0) |
-        (v2 >= level ? 2 : 0) |
-        (v3 >= level ? 1 : 0);
+    const mask =
+      (v0 >= level ? 8 : 0) |
+      (v1 >= level ? 4 : 0) |
+      (v2 >= level ? 2 : 0) |
+      (v3 >= level ? 1 : 0);
 
-      if (mask === 0 || mask === 15) continue;
+    if (mask === 0 || mask === 15) return;
 
-      const single = SINGLE_SEGMENTS[mask];
-      if (single) {
-        addSegment(cellEdgeId(r, c, single[0]), cellEdgeId(r, c, single[1]));
+    const single = SINGLE_SEGMENTS[mask];
+    if (single) {
+      addSegment(cellEdgeId(r, c, single[0]), cellEdgeId(r, c, single[1]));
+    } else {
+      const centerHigh = 0.25 * (v0 + v1 + v2 + v3) >= level;
+      if ((mask === 5 && centerHigh) || (mask === 10 && !centerHigh)) {
+        addSegment(cellEdgeId(r, c, 3), cellEdgeId(r, c, 0));
+        addSegment(cellEdgeId(r, c, 2), cellEdgeId(r, c, 1));
       } else {
-        const centerHigh = 0.25 * (v0 + v1 + v2 + v3) >= level;
-        if ((mask === 5 && centerHigh) || (mask === 10 && !centerHigh)) {
-          addSegment(cellEdgeId(r, c, 3), cellEdgeId(r, c, 0));
-          addSegment(cellEdgeId(r, c, 2), cellEdgeId(r, c, 1));
-        } else {
-          addSegment(cellEdgeId(r, c, 0), cellEdgeId(r, c, 1));
-          addSegment(cellEdgeId(r, c, 3), cellEdgeId(r, c, 2));
+        addSegment(cellEdgeId(r, c, 0), cellEdgeId(r, c, 1));
+        addSegment(cellEdgeId(r, c, 3), cellEdgeId(r, c, 2));
+      }
+    }
+  };
+
+  if (activeCoarseCells) {
+    for (const [cr, cc] of activeCoarseCells) {
+      const r0 = cr * subdiv;
+      const c0 = cc * subdiv;
+      for (let dr = 0; dr < subdiv; dr++) {
+        for (let dc = 0; dc < subdiv; dc++) {
+          processCell(r0 + dr, c0 + dc);
         }
+      }
+    }
+  } else {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        processCell(r, c);
       }
     }
   }
@@ -193,6 +225,162 @@ export function marchingSquares(
   }
 
   return contours;
+}
+
+/**
+ * Coarse-to-fine (band) Marching Squares cache.
+ * Evaluates a coarse `(coarseCells + 1)^2` grid upfront, then on `extract(level)`
+ * lazily subdivides only the narrow band of coarse cells near `level` into
+ * `subdiv x subdiv` fine sub-cells on a conformal `(coarseCells * subdiv + 1)^2` lattice.
+ */
+export class BandContourGrid {
+  readonly coarseSize: number;
+  readonly fineCells: number;
+  readonly fineSize: number;
+  readonly coarseValues: Float32Array;
+  readonly fineValues: Float32Array;
+  private readonly fineStep: number;
+
+  constructor(
+    readonly field: (re: number, im: number) => number,
+    readonly coarseCells = 128,
+    readonly subdiv = 8,
+  ) {
+    this.coarseSize = coarseCells + 1;
+    this.fineCells = coarseCells * subdiv;
+    this.fineSize = this.fineCells + 1;
+    this.fineStep = 4 / this.fineCells;
+    this.coarseValues = new Float32Array(this.coarseSize * this.coarseSize);
+    this.fineValues = new Float32Array(this.fineSize * this.fineSize);
+    this.fineValues.fill(NaN);
+
+    const coarseStep = 4 / coarseCells;
+    for (let cr = 0; cr <= coarseCells; cr++) {
+      const im = -2 + cr * coarseStep;
+      const fr = cr * subdiv;
+      for (let cc = 0; cc <= coarseCells; cc++) {
+        const re = -2 + cc * coarseStep;
+        const v = field(re, im);
+        this.coarseValues[cr * this.coarseSize + cc] = v;
+        this.fineValues[fr * this.fineSize + cc * subdiv] = v;
+      }
+    }
+  }
+
+  /** Extract Marching Squares contours at `level` at full fine resolution (`fineSize x fineSize`). */
+  extract(level: number): Contour[] {
+    const { coarseCells, coarseSize, subdiv, fineSize, fineStep, coarseValues, fineValues, field } =
+      this;
+    const inQueue = new Uint8Array(coarseCells * coarseCells);
+    const queue: number[] = [];
+    const active: Array<[number, number]> = [];
+
+    const enqueue = (cr: number, cc: number): void => {
+      const idx = cr * coarseCells + cc;
+      if (inQueue[idx]) return;
+      inQueue[idx] = 1;
+      queue.push(idx);
+    };
+
+    // Seed with coarse cells whose 3x3 coarse neighborhood straddles `level`
+    for (let cr = 0; cr < coarseCells; cr++) {
+      const rMin = Math.max(0, cr - 1);
+      const rMax = Math.min(coarseCells, cr + 2);
+      for (let cc = 0; cc < coarseCells; cc++) {
+        const cMin = Math.max(0, cc - 1);
+        const cMax = Math.min(coarseCells, cc + 2);
+        let vMin = Infinity;
+        let vMax = -Infinity;
+        for (let r = rMin; r <= rMax; r++) {
+          const rowOff = r * coarseSize;
+          for (let c = cMin; c <= cMax; c++) {
+            const v = coarseValues[rowOff + c];
+            if (v < vMin) vMin = v;
+            if (v > vMax) vMax = v;
+          }
+        }
+
+        if (vMin <= level && vMax >= level) {
+          enqueue(cr, cc);
+        }
+      }
+    }
+
+    // BFS propagation: populate fine vertices and expand across any border that straddles `level`
+    // so a fine contour can NEVER be clipped at an active/inactive coarse cell boundary.
+    let head = 0;
+    while (head < queue.length) {
+      const idx = queue[head++];
+      const cr = Math.floor(idx / coarseCells);
+      const cc = idx % coarseCells;
+      active.push([cr, cc]);
+
+      const fr0 = cr * subdiv;
+      const fc0 = cc * subdiv;
+      for (let dr = 0; dr <= subdiv; dr++) {
+        const fr = fr0 + dr;
+        const fRowOff = fr * fineSize;
+        const im = -2 + fr * fineStep;
+        for (let dc = 0; dc <= subdiv; dc++) {
+          const fc = fc0 + dc;
+          const fIdx = fRowOff + fc;
+          if (Number.isNaN(fineValues[fIdx])) {
+            fineValues[fIdx] = field(-2 + fc * fineStep, im);
+          }
+        }
+      }
+
+      // Check top border (dr = 0)
+      if (cr > 0) {
+        let hasLow = false;
+        let hasHigh = false;
+        const fRowOff = fr0 * fineSize;
+        for (let dc = 0; dc <= subdiv; dc++) {
+          if (fineValues[fRowOff + fc0 + dc] >= level) hasHigh = true;
+          else hasLow = true;
+        }
+        if (hasLow && hasHigh) enqueue(cr - 1, cc);
+      }
+
+      // Check bottom border (dr = subdiv)
+      if (cr + 1 < coarseCells) {
+        let hasLow = false;
+        let hasHigh = false;
+        const fRowOff = (fr0 + subdiv) * fineSize;
+        for (let dc = 0; dc <= subdiv; dc++) {
+          if (fineValues[fRowOff + fc0 + dc] >= level) hasHigh = true;
+          else hasLow = true;
+        }
+        if (hasLow && hasHigh) enqueue(cr + 1, cc);
+      }
+
+      // Check left border (dc = 0)
+      if (cc > 0) {
+        let hasLow = false;
+        let hasHigh = false;
+        for (let dr = 0; dr <= subdiv; dr++) {
+          if (fineValues[(fr0 + dr) * fineSize + fc0] >= level) hasHigh = true;
+          else hasLow = true;
+        }
+        if (hasLow && hasHigh) enqueue(cr, cc - 1);
+      }
+
+      // Check right border (dc = subdiv)
+      if (cc + 1 < coarseCells) {
+        let hasLow = false;
+        let hasHigh = false;
+        const fcRight = fc0 + subdiv;
+        for (let dr = 0; dr <= subdiv; dr++) {
+          if (fineValues[(fr0 + dr) * fineSize + fcRight] >= level) hasHigh = true;
+          else hasLow = true;
+        }
+        if (hasLow && hasHigh) enqueue(cr, cc + 1);
+      }
+    }
+
+    if (active.length === 0) return [];
+    return extractFromIndexedCells(fineValues, fineSize, fineSize, level, active, subdiv);
+  }
 }
 
 /**
@@ -363,9 +551,9 @@ function buildLightningBridge(
 }
 
 /**
- * Connect all closed contour islands into a single watertight closed loop by
- * iteratively bridging the closest unconnected island into the growing perimeter
- * (Prim's Minimum Spanning Tree order, so island chains connect sequentially).
+ * Connect contour islands into a single watertight closed loop by building a
+ * Euclidean Minimum Spanning Tree (Prim's algorithm) across the islands and
+ * splicing them via a depth-first Euler tour over refined doubled bridges.
  */
 export function connectAndRefineContours(
   contours: Contour[],
@@ -378,57 +566,157 @@ export function connectAndRefineContours(
   const main = largestContour(contours);
   if (!main) return null;
 
-  // Keep all non-degenerate islands caught by Marching Squares resolution, oriented CCW
-  const remaining = contours
-    .filter((c) => c !== main && c.points.length >= 3)
-    .map((c) => ensureCCW(c.points));
-  let mainPoints = ensureCCW(main.points);
+  // Put `main` at index 0, followed by non-degenerate satellite islands (>= 6 vertices
+  // to skip single-cell 4-vertex diamond noise at high levels)
+  const minVerts = contours.length > 12 ? 6 : 3;
+  const loops: Array<Array<[number, number]>> = [
+    ensureCCW(main.points),
+    ...contours
+      .filter((c) => c !== main && c.points.length >= minVerts)
+      .map((c) => ensureCCW(c.points)),
+  ];
 
+  const kCount = loops.length;
+  if (kCount === 1) {
+    return { points: loops[0], closed: true };
+  }
+
+  // Precompute axis-aligned bounding boxes for fast loop-to-loop distance pruning
+  const boxes = loops.map((pts) => {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const [x, y] of pts) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    return { minX, minY, maxX, maxY };
+  });
+
+  const boxDist2 = (a: number, b: number): number => {
+    const ba = boxes[a];
+    const bb = boxes[b];
+    const dx = Math.max(0, ba.minX - bb.maxX, bb.minX - ba.maxX);
+    const dy = Math.max(0, ba.minY - bb.maxY, bb.minY - ba.maxY);
+    return dx * dx + dy * dy;
+  };
+
+  // Prim's MST state: for each unconnected loop `u`, track its closest attachment to the tree
+  const inTree = new Uint8Array(kCount);
+  const bestDist2 = new Float64Array(kCount).fill(Infinity);
+  const bestParentLoop = new Int32Array(kCount).fill(-1);
+  const bestParentVert = new Int32Array(kCount).fill(-1);
+  const bestChildVert = new Int32Array(kCount).fill(-1);
+
+  interface ChildAttachment {
+    childLoop: number;
+    parentVert: number;
+    childVert: number;
+    outgoing: Array<[number, number]>;
+    returning: Array<[number, number]>;
+  }
+
+  const childrenByLoop: ChildAttachment[][] = Array.from({ length: kCount }, () => []);
   const stepSize = cellSize * 0.5;
 
-  while (remaining.length > 0) {
-    let bestLoopIdx = -1;
-    let bestMainVert = -1;
-    let bestSubVert = -1;
-    let bestDist2 = Infinity;
+  const updateDistancesFrom = (treeLoop: number): void => {
+    const treePts = loops[treeLoop];
+    for (let u = 1; u < kCount; u++) {
+      if (inTree[u]) continue;
+      if (boxDist2(treeLoop, u) >= bestDist2[u]) continue;
 
-    for (let l = 0; l < remaining.length; l++) {
-      const subPts = remaining[l];
-      for (let i = 0; i < mainPoints.length; i++) {
-        const [ax, ay] = mainPoints[i];
+      const subPts = loops[u];
+      let d2Min = bestDist2[u];
+      let iBest = bestParentVert[u];
+      let jBest = bestChildVert[u];
+      let improved = false;
+
+      for (let i = 0; i < treePts.length; i++) {
+        const [ax, ay] = treePts[i];
         for (let j = 0; j < subPts.length; j++) {
           const dx = subPts[j][0] - ax;
           const dy = subPts[j][1] - ay;
           const d2 = dx * dx + dy * dy;
-          if (d2 < bestDist2) {
-            bestDist2 = d2;
-            bestLoopIdx = l;
-            bestMainVert = i;
-            bestSubVert = j;
+          if (d2 < d2Min) {
+            d2Min = d2;
+            iBest = i;
+            jBest = j;
+            improved = true;
           }
         }
       }
+
+      if (improved) {
+        bestDist2[u] = d2Min;
+        bestParentLoop[u] = treeLoop;
+        bestParentVert[u] = iBest;
+        bestChildVert[u] = jBest;
+      }
     }
+  };
 
-    if (bestLoopIdx < 0) break;
+  inTree[0] = 1;
+  updateDistancesFrom(0);
 
-    const subPoints = remaining.splice(bestLoopIdx, 1)[0];
-    const pA = mainPoints[bestMainVert];
-    const pB = subPoints[bestSubVert];
+  for (let step = 1; step < kCount; step++) {
+    let nextLoop = -1;
+    let minD2 = Infinity;
+    for (let u = 1; u < kCount; u++) {
+      if (!inTree[u] && bestDist2[u] < minD2) {
+        minD2 = bestDist2[u];
+        nextLoop = u;
+      }
+    }
+    if (nextLoop < 0) break;
 
+    inTree[nextLoop] = 1;
+    const pLoop = bestParentLoop[nextLoop];
+    const pVert = bestParentVert[nextLoop];
+    const cVert = bestChildVert[nextLoop];
+    const pA = loops[pLoop][pVert];
+    const pB = loops[nextLoop][cVert];
     const { outgoing, returning } = buildLightningBridge(pA, pB, level, field, stepSize);
 
-    // Splice `subPoints` into `mainPoints` via the doubled bridge so subsequent islands
-    // can chain off this newly attached island rather than jumping back to the core
-    mainPoints = [
-      ...mainPoints.slice(0, bestMainVert + 1),
-      ...outgoing,
-      ...subPoints.slice(bestSubVert),
-      ...subPoints.slice(0, bestSubVert + 1),
-      ...returning,
-      ...mainPoints.slice(bestMainVert),
-    ];
+    childrenByLoop[pLoop].push({
+      childLoop: nextLoop,
+      parentVert: pVert,
+      childVert: cVert,
+      outgoing,
+      returning,
+    });
+
+    updateDistancesFrom(nextLoop);
   }
 
-  return { points: mainPoints, closed: true };
+  // Depth-first Euler tour splices all child loops into a single closed polygon
+  // without ever shifting or invalidating parent vertex indices
+  const out: Array<[number, number]> = [];
+
+  const emitLoop = (loopIdx: number, startVert: number): void => {
+    const pts = loops[loopIdx];
+    const n = pts.length;
+    const attachments = childrenByLoop[loopIdx];
+
+    for (let offset = 0; offset < n; offset++) {
+      const v = (startVert + offset) % n;
+      out.push(pts[v]);
+
+      for (let a = 0; a < attachments.length; a++) {
+        const att = attachments[a];
+        if (att.parentVert === v) {
+          for (const p of att.outgoing) out.push(p);
+          emitLoop(att.childLoop, att.childVert);
+          out.push(loops[att.childLoop][att.childVert]);
+          for (const p of att.returning) out.push(p);
+          out.push(pts[v]);
+        }
+      }
+    }
+  };
+
+  emitLoop(0, 0);
+  return { points: out, closed: true };
 }

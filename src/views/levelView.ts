@@ -1,32 +1,36 @@
-import { mandelbrotSmooth, smoothEscape } from '../algorithms/mandelbrot';
+import { smoothEscape } from '../algorithms/mandelbrot';
 import {
+  BandContourGrid,
   connectAndRefineContours,
-  marchingSquares,
   type Contour,
 } from '../algorithms/marchingSquares';
 import type { Renderable } from './renderable';
 
-interface GridCache {
-  gridW: number;
-  gridH: number;
+interface BandCache {
+  coarseCells: number;
+  subdiv: number;
   maxIter: number;
-  values: Float32Array;
+  grid: BandContourGrid;
 }
 
-let cachedGrid: GridCache | null = null;
+let cachedBand: BandCache | null = null;
 
-function getSmoothGrid(gridW: number, gridH: number, maxIter: number): Float32Array {
+function getBandGrid(coarseCells: number, subdiv: number, maxIter: number): BandContourGrid {
   if (
-    cachedGrid &&
-    cachedGrid.gridW === gridW &&
-    cachedGrid.gridH === gridH &&
-    cachedGrid.maxIter === maxIter
+    cachedBand &&
+    cachedBand.coarseCells === coarseCells &&
+    cachedBand.subdiv === subdiv &&
+    cachedBand.maxIter === maxIter
   ) {
-    return cachedGrid.values;
+    return cachedBand.grid;
   }
-  const values = mandelbrotSmooth(gridW, gridH, maxIter);
-  cachedGrid = { gridW, gridH, maxIter, values };
-  return values;
+  const grid = new BandContourGrid(
+    (re, im) => smoothEscape(re, im, maxIter),
+    coarseCells,
+    subdiv,
+  );
+  cachedBand = { coarseCells, subdiv, maxIter, grid };
+  return grid;
 }
 
 /**
@@ -68,7 +72,7 @@ export class LevelView implements Renderable {
     const base =
       this.steps > 1 ? Math.max(2, Math.floor(this.iter / this.steps) + 2) : Math.max(2, this.iter);
     return this.targetLevel !== undefined
-      ? Math.max(base, Math.ceil(this.targetLevel) + 1)
+      ? Math.max(base, 52, Math.ceil(this.targetLevel) + 1)
       : base;
   }
 
@@ -84,19 +88,23 @@ export class LevelView implements Renderable {
     return Math.min(maxIter - 1e-4, Math.max(1e-4, raw));
   }
 
-  /** Extract and bridge the Marching Squares contours at the active level into a single loop. */
-  extractContours(gridResolution = 257): { contours: Contour[]; primary: Contour | null; level: number } {
+  /**
+   * Extract and bridge the coarse-to-fine Marching Squares contours at the active level
+   * into a single closed loop (defaults to `128 * 4 = 512` fine cells across `[-2, 2]`).
+   */
+  extractContours(
+    coarseCells = 128,
+    subdiv = 4,
+  ): { contours: Contour[]; primary: Contour | null; level: number } {
     const maxIter = this.effectiveIter;
     const level = this.level;
-    const gridW = Math.max(17, Math.min(gridResolution, this.width));
-    const gridH = Math.max(17, Math.min(gridResolution, this.height));
-    const values = getSmoothGrid(gridW, gridH, maxIter);
-    const rawContours = marchingSquares(values, gridW, gridH, level);
+    const bandGrid = getBandGrid(coarseCells, subdiv, maxIter);
+    const rawContours = bandGrid.extract(level);
     const connected = connectAndRefineContours(
       rawContours,
       level,
-      (re, im) => smoothEscape(re, im, maxIter),
-      4 / (gridW - 1),
+      bandGrid.field,
+      4 / bandGrid.fineCells,
     );
     const contours = connected ? [connected] : [];
     return { contours, primary: connected, level };
