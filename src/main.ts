@@ -162,7 +162,7 @@ const levelController = gui.add(params, 'level', 0, MAX_ITER/10, 1).onChange((n:
   trace = !isLineMode(params.mode) && n > 0 ? createTrace(canvas.width, canvas.height) : null;
   composeFrame();
 });
-gui.add(params, 'res', 0.5, 4, 0.5).onFinishChange(() => {
+gui.add(params, 'res', 0.5, 4, 0.5).onChange(() => {
   trace = createTrace(canvas.width, canvas.height);
   composeFrame();
 });

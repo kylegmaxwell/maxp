@@ -201,4 +201,23 @@ describe('marchingSquares', () => {
       expect(maxSeg).toBeLessThan(0.15);
     }
   });
+
+  it('BFS border-crossing propagation follows a thin sub-coarse filament across coarse cell borders', () => {
+    // Narrow horizontal ridge along y = 0.12 (between coarse grid lines on an 8x8 coarse grid where step = 0.5)
+    // extending from x = -0.8 to x = 0.8 so its coarse corners all fall outside the narrow ridge.
+    const field = (x: number, y: number): number => {
+      const mainHub = 15 * Math.exp(-((x + 0.5) ** 2 + (y - 0.12) ** 2) / 0.12);
+      const thinSpike = x >= -0.5 && x <= 0.8 ? 12 * Math.exp(-((y - 0.12) ** 2) / 0.002) : 0;
+      return Math.max(mainHub, thinSpike);
+    };
+
+    const band = new BandContourGrid(field, 8, 8);
+    const contours = band.extract(10);
+    expect(contours).toHaveLength(1);
+    expect(contours[0].closed).toBe(true);
+
+    // Contour must reach all the way to the tip of the thin spike at x ≈ 0.8 without clipping
+    const maxX = Math.max(...contours[0].points.map(([x]) => x));
+    expect(maxX).toBeGreaterThan(0.75);
+  });
 });

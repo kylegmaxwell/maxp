@@ -82,4 +82,12 @@ describe('LevelView', () => {
     expect(mock.moves.length).toBe(1);
     expect(mock.arcCount).toBe(0); // no clicked point marker
   });
+
+  it('scales contour vertex density with the res multiplier', () => {
+    const lowRes = new LevelView(null, null, 129, 129, 20, 1, 8, 0.5);
+    const highRes = new LevelView(null, null, 129, 129, 20, 1, 8, 1.5);
+    const lowPts = lowRes.extractContours().primary!.points.length;
+    const highPts = highRes.extractContours().primary!.points.length;
+    expect(highPts).toBeGreaterThan(lowPts * 2);
+  });
 });

@@ -325,6 +325,10 @@ export class BandContourGrid {
       queue.push(idx);
     };
 
+    // Scale the filament gradient threshold inversely with coarseCells so higher `res`
+    // multipliers don't stop seeding cells as the coarse cell width shrinks.
+    const filamentDelta = Math.max(0.4, 2.0 * (128 / coarseCells));
+
     // Seed with coarse cells whose 3x3 coarse neighborhood straddles `level`
     for (let cr = 0; cr < coarseCells; cr++) {
       const rMin = Math.max(0, cr - 1);
@@ -344,8 +348,8 @@ export class BandContourGrid {
         }
 
         // Seed if coarse vertices straddle `level`, OR if the neighborhood has a steep
-        // filament shoulder (`vMax >= 6` and `vMax - vMin >= 2.5`) whose fine core may reach `level`
-        const hasFilament = vMax >= 6 && vMax - vMin >= 2.5;
+        // filament shoulder (`vMax >= 5` and `vMax - vMin >= filamentDelta`) whose fine core may reach `level`
+        const hasFilament = vMax >= 5 && vMax - vMin >= filamentDelta;
         if (vMin <= level && (vMax >= level || hasFilament)) {
           enqueue(cr, cc);
         }
