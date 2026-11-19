@@ -73,12 +73,13 @@ describe('LevelView', () => {
     const view = new LevelView(null, null, 129, 129, 10, 1, 5);
     expect(view.level).toBe(5);
     const { contours, primary } = view.extractContours(65);
-    expect(contours.length).toBeGreaterThan(0);
-    expect(primary).toBeNull();
+    expect(contours).toHaveLength(1);
+    expect(primary).toBe(contours[0]);
+    expect(primary!.closed).toBe(true);
 
     const mock = makeMockCtx();
     view.render(mock.ctx);
-    expect(mock.moves.length).toBe(contours.length);
+    expect(mock.moves.length).toBe(1);
     expect(mock.arcCount).toBe(0); // no clicked point marker
   });
 });

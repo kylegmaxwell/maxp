@@ -1,5 +1,9 @@
 import { mandelbrotSmooth, smoothEscape } from '../algorithms/mandelbrot';
-import { closestContour, marchingSquares, type Contour } from '../algorithms/marchingSquares';
+import {
+  connectAndRefineContours,
+  marchingSquares,
+  type Contour,
+} from '../algorithms/marchingSquares';
 import type { Renderable } from './renderable';
 
 interface GridCache {
@@ -80,17 +84,22 @@ export class LevelView implements Renderable {
     return Math.min(maxIter - 1e-4, Math.max(1e-4, raw));
   }
 
-  /** Extract the exact Marching Squares contours at the active level. */
+  /** Extract and bridge the Marching Squares contours at the active level into a single loop. */
   extractContours(gridResolution = 257): { contours: Contour[]; primary: Contour | null; level: number } {
     const maxIter = this.effectiveIter;
     const level = this.level;
     const gridW = Math.max(17, Math.min(gridResolution, this.width));
     const gridH = Math.max(17, Math.min(gridResolution, this.height));
     const values = getSmoothGrid(gridW, gridH, maxIter);
-    const contours = marchingSquares(values, gridW, gridH, level);
-    const primary =
-      this.cRe !== null && this.cIm !== null ? closestContour(contours, this.cRe, this.cIm) : null;
-    return { contours, primary, level };
+    const rawContours = marchingSquares(values, gridW, gridH, level);
+    const connected = connectAndRefineContours(
+      rawContours,
+      level,
+      (re, im) => smoothEscape(re, im, maxIter),
+      4 / (gridW - 1),
+    );
+    const contours = connected ? [connected] : [];
+    return { contours, primary: connected, level };
   }
 
   /** Implements `Renderable.render`. */
