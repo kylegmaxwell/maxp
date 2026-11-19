@@ -41,7 +41,7 @@ export function smoothEscape(cRe: number, cIm: number, iter: number): number {
     const r2 = x2 + y2;
     if (r2 > 4) {
       const logZ = 0.5 * Math.log(r2);
-      const frac = Math.min(1, Math.max(0, Math.log(logZ / Math.LN2) / Math.LN2));
+      const frac = Math.min(1 - 1e-5, Math.max(0, Math.log(logZ / Math.LN2) / Math.LN2));
       return i - frac;
     }
     lastR2 = r2;

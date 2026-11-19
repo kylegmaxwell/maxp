@@ -166,6 +166,21 @@ describe('marchingSquares', () => {
     expect(evaluated).toBeLessThan(band.fineValues.length * 0.6);
   });
 
+  it('produces a single clean radius-2 circle at Mandelbrot level 1 with no interior diamond', () => {
+    const maxIter = 52;
+    const field = (re: number, im: number) => smoothEscape(re, im, maxIter);
+    const band = new BandContourGrid(field, 64, 4);
+    const raw = band.extract(1);
+    const connected = connectAndRefineContours(raw, 1, field, 4 / band.fineCells);
+
+    expect(connected).not.toBeNull();
+    expect(connected!.closed).toBe(true);
+    for (const [x, y] of connected!.points) {
+      expect(Math.hypot(x, y)).toBeGreaterThan(1.95);
+      expect(Math.hypot(x, y)).toBeLessThan(2.05);
+    }
+  });
+
   it('produces no long cross-set chord segments on Mandelbrot levels 10..50', () => {
     const maxIter = 55;
     const field = (re: number, im: number) => smoothEscape(re, im, maxIter);

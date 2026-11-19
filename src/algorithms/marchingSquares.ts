@@ -188,8 +188,9 @@ function extractFromIndexedCells(
   // Stitch segments into ordered polylines
   const visited = new Set<number>();
   const contours: Contour[] = [];
+  const openPaths: Array<Array<[number, number]>> = [];
 
-  const walk = (startId: number, closed: boolean): void => {
+  const walkPoints = (startId: number): Array<[number, number]> => {
     const points: Array<[number, number]> = [];
     let curr: number | undefined = startId;
     while (curr !== undefined && !visited.has(curr)) {
@@ -205,22 +206,64 @@ function extractFromIndexedCells(
       }
       curr = next;
     }
-    if (points.length >= 2) {
-      contours.push({ points, closed });
-    }
+    return points;
   };
 
-  // First walk all open paths starting at degree-1 boundary nodes
+  // Collect all open paths starting at degree-1 boundary nodes
   for (const [id, neighbors] of adj) {
     if (neighbors.length === 1 && !visited.has(id)) {
-      walk(id, false);
+      const pts = walkPoints(id);
+      if (pts.length >= 2) openPaths.push(pts);
     }
+  }
+
+  // Chain open boundary arcs (e.g. when a contour grazes the [-2, 2] box edges at (-2, 0) or level = 1)
+  // by repeatedly joining the closest boundary endpoints instead of closing each arc with an interior chord.
+  while (openPaths.length > 0) {
+    const chain = openPaths.shift()!;
+    while (openPaths.length > 0) {
+      const tail = chain[chain.length - 1];
+      let bestIdx = -1;
+      let bestReverse = false;
+      let bestD2 = Infinity;
+
+      for (let i = 0; i < openPaths.length; i++) {
+        const cand = openPaths[i];
+        const headCand = cand[0];
+        const tailCand = cand[cand.length - 1];
+        const dHead2 = (headCand[0] - tail[0]) ** 2 + (headCand[1] - tail[1]) ** 2;
+        if (dHead2 < bestD2) {
+          bestD2 = dHead2;
+          bestIdx = i;
+          bestReverse = false;
+        }
+        const dTail2 = (tailCand[0] - tail[0]) ** 2 + (tailCand[1] - tail[1]) ** 2;
+        if (dTail2 < bestD2) {
+          bestD2 = dTail2;
+          bestIdx = i;
+          bestReverse = true;
+        }
+      }
+
+      // Only chain open arcs whose boundary endpoints meet near the same boundary touch point
+      const dSelf2 = (chain[0][0] - tail[0]) ** 2 + (chain[0][1] - tail[1]) ** 2;
+      if (bestIdx < 0 || dSelf2 <= bestD2) break;
+
+      const nextArc = openPaths.splice(bestIdx, 1)[0];
+      if (bestReverse) nextArc.reverse();
+      chain.push(...nextArc);
+    }
+    const head = chain[0];
+    const tail = chain[chain.length - 1];
+    const closedOnBoundary = Math.hypot(head[0] - tail[0], head[1] - tail[1]) < 0.25;
+    contours.push({ points: chain, closed: closedOnBoundary });
   }
 
   // Remaining unvisited nodes form closed loops (all degree 2)
   for (const [id] of adj) {
     if (!visited.has(id)) {
-      walk(id, true);
+      const pts = walkPoints(id);
+      if (pts.length >= 2) contours.push({ points: pts, closed: true });
     }
   }
 
