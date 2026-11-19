@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { escapeIteration, mandelbrotEscape, MandelbrotGrid } from './mandelbrot';
+import {
+  escapeIteration,
+  mandelbrotEscape,
+  MandelbrotGrid,
+  mandelbrotSmooth,
+  smoothEscape,
+} from './mandelbrot';
 
 describe('escapeIteration', () => {
   it('never escapes for points in the set', () => {
@@ -72,6 +78,40 @@ describe('MandelbrotGrid', () => {
     grid.reset();
     expect(grid.steps).toBe(0);
     expect(grid.values.every((v) => v === 0)).toBe(true);
+  });
+});
+
+describe('smoothEscape', () => {
+  it('aligns with integer n right at the discrete bailout boundary |z_n| = 2', () => {
+    // At i = 1, z_1 = c. For |c| = 2 + eps, smoothEscape approaches 1 from below;
+    // for |c| = 2, it does not escape at i = 1 and equals 1 from the interior formula.
+    expect(smoothEscape(2, 0, 2)).toBeCloseTo(1, 5);
+    expect(smoothEscape(2.0001, 0, 2)).toBeCloseTo(1, 3);
+    expect(smoothEscape(1.9999, 0, 2)).toBeCloseTo(1, 3);
+  });
+
+  it('increases monotonically from exterior toward the origin', () => {
+    const vOuter = smoothEscape(1.8, 0, 10);
+    const vMid = smoothEscape(1.0, 0, 10);
+    const vInner = smoothEscape(0.5, 0, 10);
+    const vOrigin = smoothEscape(0, 0, 10);
+    expect(vOuter).toBeLessThan(vMid);
+    expect(vMid).toBeLessThan(vInner);
+    expect(vInner).toBeLessThan(vOrigin);
+    expect(vOrigin).toBeCloseTo(10, 5);
+  });
+});
+
+describe('mandelbrotSmooth', () => {
+  it('produces a symmetric smooth field across the real axis', () => {
+    const size = 9;
+    const out = mandelbrotSmooth(size, size, 15);
+    expect(out).toHaveLength(size * size);
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        expect(out[r * size + c]).toBeCloseTo(out[(size - 1 - r) * size + c], 5);
+      }
+    }
   });
 });
 

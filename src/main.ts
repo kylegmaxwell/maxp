@@ -2,6 +2,7 @@ import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 import { BuddhabrotGrid } from './algorithms/buddhabrot';
 import { MandelbrotGrid } from './algorithms/mandelbrot';
 import { GridView } from './views/gridView';
+import { LevelView } from './views/levelView';
 import { ParticleView } from './views/particleView';
 import { PathView, pixelToComplex } from './views/pathView';
 import type { Renderable } from './views/renderable';
@@ -13,9 +14,10 @@ type Mode = (typeof MODES)[number];
 const MAX_ITER = 500;
 
 // Values controlled by the GUI
-const params: { mode: Mode; iter: number; fps: number; play: boolean } = {
+const params: { mode: Mode; iter: number; level: number; fps: number; play: boolean } = {
   mode: 'mandelbrot',
   iter: 50,
+  level: 0,
   fps: 10,
   play: false,
 };
@@ -29,7 +31,25 @@ const baseCtx = baseCanvas.getContext('2d')!;
 
 let renderer: Renderable;
 let tracePoint: [number, number] | null = null;
-let trace: PathView | null = null;
+let trace: PathView | LevelView | null = null;
+
+function isLineMode(mode: Mode): boolean {
+  return mode === 'linebrot' || mode === 'vectorbrot';
+}
+
+function createTrace(width: number, height: number): PathView | LevelView | null {
+  if (isLineMode(params.mode)) {
+    return tracePoint ? new PathView(tracePoint[0], tracePoint[1], width, height, params.iter) : null;
+  }
+  const steps = params.mode === 'partibrot' ? 10 : 1;
+  if (tracePoint) {
+    return new LevelView(tracePoint[0], tracePoint[1], width, height, params.iter, steps);
+  }
+  if (params.level > 0) {
+    return new LevelView(null, null, width, height, params.iter, steps, params.level);
+  }
+  return null;
+}
 
 function createRenderable(mode: Mode, size: number): Renderable {
   switch (mode) {
@@ -74,7 +94,7 @@ function rebuild(): void {
   baseCtx.fillRect(0, 0, size, size);
 
   renderer = createRenderable(params.mode, size);
-  trace = tracePoint ? new PathView(tracePoint[0], tracePoint[1], size, size, params.iter) : null;
+  trace = createTrace(size, size);
   renderFrame();
 }
 
@@ -127,6 +147,15 @@ const gui = new GUI({ title: 'Fractal' });
 gui.add(params, 'mode', [...MODES]).onChange(rebuild);
 // Setting the iteration directly re-simulates from the start at that value
 const iterController = gui.add(params, 'iter', 1, MAX_ITER, 1).onFinishChange(rebuild);
+const levelController = gui.add(params, 'level', 0, MAX_ITER/10, 1).onChange((n: number) => {
+  tracePoint = null;
+  const steps = params.mode === 'partibrot' ? 10 : 1;
+  trace =
+    !isLineMode(params.mode) && n > 0
+      ? new LevelView(null, null, canvas.width, canvas.height, params.iter, steps, n)
+      : null;
+  composeFrame();
+});
 const playController = gui
   .add(params, 'play')
   .onChange((on: boolean) => (on ? play() : pause()));
@@ -145,6 +174,8 @@ gui.add(
     clearTrace: () => {
       tracePoint = null;
       trace = null;
+      params.level = 0;
+      levelController.updateDisplay();
       composeFrame();
     },
   },
@@ -155,7 +186,11 @@ let dragging = false;
 
 function updateTrace(e: PointerEvent): void {
   tracePoint = pixelToComplex(e.offsetX, e.offsetY, canvas.width, canvas.height);
-  trace = new PathView(tracePoint[0], tracePoint[1], canvas.width, canvas.height, params.iter);
+  trace = createTrace(canvas.width, canvas.height);
+  if (trace instanceof LevelView) {
+    params.level = Math.round(trace.level);
+    levelController.updateDisplay();
+  }
   composeFrame();
 }
 
@@ -184,6 +219,8 @@ canvas.addEventListener('contextmenu', (e: MouseEvent) => {
   if (!trace) return;
   tracePoint = null;
   trace = null;
+  params.level = 0;
+  levelController.updateDisplay();
   composeFrame();
 });
 
