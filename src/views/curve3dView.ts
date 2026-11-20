@@ -3,8 +3,10 @@ import {
   BufferAttribute,
   BufferGeometry,
   Color,
+  CylinderGeometry,
   DirectionalLight,
   DoubleSide,
+  ExtrudeGeometry,
   GridHelper,
   Group,
   Line,
@@ -16,20 +18,35 @@ import {
   PerspectiveCamera,
   PMREMGenerator,
   Scene,
+  Shape,
   ShapeUtils,
   Vector2,
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import type { Contour } from '../algorithms/marchingSquares';
+import { largestContour, marchingSquares, type Contour } from '../algorithms/marchingSquares';
 import { extractLevelContour } from './levelView';
 
 export const VIEW3D_MODES = ['curves', 'mesh'] as const;
 export type View3DMode = (typeof VIEW3D_MODES)[number];
 
-export const DEFAULT_AXIS_HEIGHT = 2.6;
-export const DEFAULT_BASE_HEIGHT = DEFAULT_AXIS_HEIGHT / 2;
+/** Real-world metric scale: 1 Three.js unit = 1 mm (50 mm per complex unit => Level 2 is 150 mm long). */
+export const MM_PER_UNIT = 50;
+/** Shift complex real axis by -0.5 so Level 2 (re in [-2, 1]) is centered on the build plate. */
+export const CENTER_RE = -0.5;
+/** Bambu A1 mini build plate size in mm. */
+export const BUILD_PLATE_SIZE_MM = 180;
+/** US Quarter dimensions in mm (24.26 mm diameter x 1.75 mm thickness). */
+export const QUARTER_RADIUS_MM = 12.13;
+export const QUARTER_THICKNESS_MM = 1.75;
+/** Default terrace layer step height in mm (10 layers at 0.20 mm print layer height). */
+export const DEFAULT_LAYER_HEIGHT = 2.0;
+/** Dedicated outer rim wall expansion in mm (5 walls with a 0.4 mm nozzle). */
+export const OUTER_RIM_OFFSET_MM = 2.0;
+
+export const DEFAULT_AXIS_HEIGHT = 90;
+export const DEFAULT_BASE_HEIGHT = 45;
 
 export interface LevelCurveEntry {
   level: number;
@@ -126,15 +143,16 @@ export function buildLevelStack(
 
 /**
  * Convert a 2D complex-plane contour (`[re, im]` in `[-2, 2]^2`) at `level`
- * into flat 3D `[x, y, z]` vertex coordinates with `x = re`, `z = im`,
- * and `y = baseHeight - levelToDepth(level) * heightScale` (starting at half the axis
- * and carving downward toward `y = 0` as level increases).
+ * into flat 3D metric `[x, y, z]` coordinates (in mm) with `x = (re - centerRe) * mmPerUnit`,
+ * `z = im * mmPerUnit`, and `y = baseHeight - levelToDepth(level) * heightScale`.
  */
 export function contourToPositions(
   contour: Contour,
   level: number,
-  heightScale = 0.08,
+  heightScale = DEFAULT_LAYER_HEIGHT,
   baseHeight = DEFAULT_BASE_HEIGHT,
+  mmPerUnit = MM_PER_UNIT,
+  centerRe = CENTER_RE,
 ): Float32Array {
   const pts = contour.points;
   const out = new Float32Array(pts.length * 3);
@@ -142,31 +160,144 @@ export function contourToPositions(
   for (let i = 0; i < pts.length; i++) {
     const [re, im] = pts[i];
     const j = i * 3;
-    out[j] = re;
+    out[j] = (re - centerRe) * mmPerUnit;
     out[j + 1] = y;
-    out[j + 2] = im;
+    out[j + 2] = im * mmPerUnit;
   }
   return out;
 }
 
-/** Remove consecutive near-duplicate points from a closed contour. */
-function cleanContourPoints(points: ReadonlyArray<[number, number]>): Vector2[] {
+/**
+ * Convert a complex-plane contour into cleaned 2D metric `(x, z)` points in mm.
+ */
+function cleanContourPointsMm(
+  points: ReadonlyArray<[number, number]>,
+  mmPerUnit = MM_PER_UNIT,
+  centerRe = CENTER_RE,
+): Vector2[] {
   const out: Vector2[] = [];
   for (let i = 0; i < points.length; i++) {
-    const [x, y] = points[i];
+    const x = (points[i][0] - centerRe) * mmPerUnit;
+    const y = points[i][1] * mmPerUnit;
     const prev = out[out.length - 1];
-    if (!prev || Math.hypot(x - prev.x, y - prev.y) > 1e-6) {
+    if (!prev || Math.hypot(x - prev.x, y - prev.y) > 1e-4) {
       out.push(new Vector2(x, y));
     }
   }
   if (out.length > 1) {
     const first = out[0];
     const last = out[out.length - 1];
-    if (Math.hypot(first.x - last.x, first.y - last.y) <= 1e-6) {
+    if (Math.hypot(first.x - last.x, first.y - last.y) <= 1e-4) {
       out.pop();
     }
   }
   return out;
+}
+
+/**
+ * Expand a closed 2D polygon outward by `offsetMm` using Marching Squares on a scanline
+ * Euclidean distance grid (Minkowski dilation by a circle of radius `offsetMm`),
+ * guaranteeing a non-self-intersecting outer rim with uniform minimum wall thickness.
+ */
+export function expandContourOutward(pts: ReadonlyArray<Vector2>, offsetMm: number): Vector2[] {
+  if (pts.length < 3 || offsetMm <= 0) return [...pts];
+
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+
+  const pad = offsetMm * 2.5;
+  minX -= pad;
+  maxX += pad;
+  minY -= pad;
+  maxY += pad;
+  const spanX = maxX - minX;
+  const spanY = maxY - minY;
+
+  // Subsample dense contours to ~180 segments for fast distance queries
+  const maxSegs = 180;
+  const step = Math.max(1, Math.floor(pts.length / maxSegs));
+  const sub: Vector2[] = [];
+  for (let i = 0; i < pts.length; i += step) {
+    sub.push(pts[i]);
+  }
+  const n = sub.length;
+
+  const gridSize = 96;
+  const field = new Float32Array(gridSize * gridSize);
+  const dxStep = spanX / (gridSize - 1);
+  const dyStep = spanY / (gridSize - 1);
+  const maxCheckDist = offsetMm * 2.2;
+
+  for (let r = 0; r < gridSize; r++) {
+    const y = minY + r * dyStep;
+    // Scanline X intersections for fast inside/outside check along row r
+    const xInts: number[] = [];
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const yi = sub[i].y;
+      const yj = sub[j].y;
+      if (yi > y !== yj > y) {
+        xInts.push(((sub[j].x - sub[i].x) * (y - yi)) / (yj - yi) + sub[i].x);
+      }
+    }
+    xInts.sort((a, b) => a - b);
+
+    for (let c = 0; c < gridSize; c++) {
+      const x = minX + c * dxStep;
+      let inside = false;
+      for (let k = 0; k < xInts.length; k++) {
+        if (x < xInts[k]) break;
+        inside = !inside;
+      }
+
+      if (inside) {
+        field[r * gridSize + c] = offsetMm * 2;
+        continue;
+      }
+
+      let minD2 = maxCheckDist * maxCheckDist;
+      for (let i = 0, j = n - 1; i < n; j = i++) {
+        const ax = sub[j].x;
+        const ay = sub[j].y;
+        const bx = sub[i].x;
+        const by = sub[i].y;
+        if (
+          Math.min(ay, by) - y > maxCheckDist ||
+          y - Math.max(ay, by) > maxCheckDist ||
+          Math.min(ax, bx) - x > maxCheckDist ||
+          x - Math.max(ax, bx) > maxCheckDist
+        ) {
+          continue;
+        }
+        const abx = bx - ax;
+        const aby = by - ay;
+        const len2 = abx * abx + aby * aby;
+        const t = len2 > 0 ? Math.min(1, Math.max(0, ((x - ax) * abx + (y - ay) * aby) / len2)) : 0;
+        const px = ax + t * abx;
+        const py = ay + t * aby;
+        const d2 = (x - px) ** 2 + (y - py) ** 2;
+        if (d2 < minD2) minD2 = d2;
+      }
+
+      field[r * gridSize + c] = offsetMm * 2 - Math.sqrt(minD2);
+    }
+  }
+
+  const raw = marchingSquares(field, gridSize, gridSize, offsetMm);
+  const best = largestContour(raw);
+  if (!best || best.points.length < 3) return [...pts];
+
+  const out: Vector2[] = best.points.map(
+    ([nx, ny]) => new Vector2(minX + ((nx + 2) / 4) * spanX, minY + ((ny + 2) / 4) * spanY),
+  );
+  return ShapeUtils.isClockWise(out) ? out.reverse() : out;
 }
 
 function pushTri(
@@ -190,19 +321,18 @@ function pushTri(
 }
 
 /**
- * Build a sharp terraced 3D mesh from stacked level-set contours:
- * - Each consecutive pair `(k, k+1)` gets a flat horizontal terrace at `y_k`
- *   (from outer contour `k` to inner hole `k+1`) and a vertical drop wall along `k+1`
- *   from `y_k` down to `y_{k+1}`.
- * - The deepest contour is capped flat at `y_last` (its own level height).
- * - The outer contour extrudes down through every layer height to `y_last - heightScale`
- *   and is capped flat at the bottom, giving a solid floor of thickness `heightScale`.
- * - Each layer uses a flat (non-interpolated) rotating rainbow vertex color.
+ * Build a sharp terraced 3D mesh in millimeters (`1 unit = 1 mm`) sitting on `y = 0`:
+ * - Prepends a dedicated outer rim shell expanded outward by `outerRimOffsetMm` (`2.0 mm`)
+ *   around the outermost level in a neutral slate color (`0xd1d5db`).
+ * - Mathematical levels `2 .. maxLevel` step downward by `heightScale` (`2.0 mm`) per layer
+ *   in ROYGBIV colors, with a `heightScale` solid floor sitting directly on the `y = 0` build plate.
  */
 export function buildTerracedMeshGeometry(
   entries: ReadonlyArray<LevelCurveEntry>,
-  heightScale = 0.08,
-  baseHeight = DEFAULT_BASE_HEIGHT,
+  heightScale = DEFAULT_LAYER_HEIGHT,
+  mmPerUnit = MM_PER_UNIT,
+  centerRe = CENTER_RE,
+  outerRimOffsetMm = OUTER_RIM_OFFSET_MM,
 ): BufferGeometry {
   const positions: number[] = [];
   const colors: number[] = [];
@@ -217,6 +347,8 @@ export function buildTerracedMeshGeometry(
     const c = new Color(roygbiv[idx % roygbiv.length]);
     return [c.r, c.g, c.b];
   };
+  const rimColorObj = new Color(0xd1d5db);
+  const rimRgb: [number, number, number] = [rimColorObj.r, rimColorObj.g, rimColorObj.b];
 
   const pointInPoly = (pt: Vector2, poly: Vector2[]): boolean => {
     let inside = false;
@@ -232,10 +364,30 @@ export function buildTerracedMeshGeometry(
     return inside;
   };
 
-  const rings = entries.map((e, idx) => ({
-    y: baseHeight - (2 + idx) * heightScale,
-    islands: [cleanContourPoints(e.contour.points)].filter((pts) => pts.length >= 3),
+  const levelIslands = entries.map((e, idx) => ({
+    pts: cleanContourPointsMm(e.contour.points, mmPerUnit, centerRe),
     rgb: layerColor(idx),
+  }));
+
+  const rawRings: Array<{ pts: Vector2[]; rgb: [number, number, number] }> = [];
+  if (outerRimOffsetMm > 0 && levelIslands[0].pts.length >= 3) {
+    rawRings.push({
+      pts: expandContourOutward(levelIslands[0].pts, outerRimOffsetMm),
+      rgb: rimRgb,
+    });
+  }
+  for (const l of levelIslands) {
+    if (l.pts.length >= 3) {
+      rawRings.push(l);
+    }
+  }
+
+  const totalLayers = rawRings.length;
+  // Dish sits directly on y = 0: deepest floor is at y = heightScale, top rim at y = totalLayers * heightScale
+  const rings = rawRings.map((r, idx) => ({
+    y: (totalLayers - idx) * heightScale,
+    islands: [r.pts],
+    rgb: r.rgb,
   }));
 
   const addCap = (
@@ -339,34 +491,107 @@ export function buildTerracedMeshGeometry(
 }
 
 /**
- * Create a Three.js coordinate reference group with:
- * - A `[-2, 2] x [-2, 2]` grid on the `y = 0` plane
- * - Colored `+X` (Re), `+Y` (Height), and `+Z` (Im) axis lines from the origin
+ * Create a Three.js metric reference group (`1 unit = 1 mm`) with:
+ * - A `180 x 180 mm` Bambu A1 mini build plate (`y in [-1.2, 0]`) with front cutout notch
+ *   and front L-shaped calibration test print lines
+ * - A `180 x 180 mm` grid with `10 mm` divisions on `y = 0.05`
+ * - Colored `+X` (Re), `+Y` (Height), and `+Z` (Im) axis lines
+ * - A scale-reference US Quarter (`24.26 mm` diameter x `1.75 mm` thick) at the front-right corner
  */
 export function createReferenceAxes(): Group {
   const group = new Group();
+  const half = BUILD_PLATE_SIZE_MM / 2; // 90 mm
 
-  const grid = new GridHelper(4, 8, 0x3b4d5e, 0x23262e);
+  // Build plate shape in (x, -z) with rounded corners, rear wiper tab, and front notch cutout
+  const plateShape = new Shape();
+  const notchHalf = 28;
+  const notchDepth = 4;
+  plateShape.moveTo(-half, -half);
+  plateShape.lineTo(-notchHalf, -half);
+  plateShape.lineTo(-notchHalf + 3, -half + notchDepth);
+  plateShape.lineTo(notchHalf - 3, -half + notchDepth);
+  plateShape.lineTo(notchHalf, -half);
+  plateShape.lineTo(half, -half);
+  plateShape.lineTo(half, half);
+  // Rear tab
+  plateShape.lineTo(22, half);
+  plateShape.lineTo(18, half + 6);
+  plateShape.lineTo(-18, half + 6);
+  plateShape.lineTo(-22, half);
+  plateShape.lineTo(-half, half);
+  plateShape.closePath();
+
+  const plateGeom = new ExtrudeGeometry(plateShape, {
+    depth: 1.2,
+    bevelEnabled: false,
+  });
+  // Rotate from XY extrusion into XZ plane with top face at y = 0 and bottom at y = -1.2
+  plateGeom.rotateX(-Math.PI / 2);
+  plateGeom.translate(0, -1.2, 0);
+
+  const plateMat = new MeshPhysicalMaterial({
+    color: 0x22252b,
+    roughness: 0.85,
+    metalness: 0.15,
+  });
+  const plateMesh = new Mesh(plateGeom, plateMat);
+  plateMesh.receiveShadow = true;
+  group.add(plateMesh);
+
+  // Front calibration test print / purge lines (along z = +82..84 mm near the front cutout)
+  const makeTestLine = (pts: number[], color: number): Line => {
+    const geom = new BufferGeometry();
+    geom.setAttribute('position', new BufferAttribute(new Float32Array(pts), 3));
+    return new Line(geom, new LineBasicMaterial({ color }));
+  };
+  group.add(
+    makeTestLine(
+      [-75, 0.12, 83, -32, 0.12, 83, -32, 0.12, 81, -70, 0.12, 81],
+      0x22c55e,
+    ),
+  );
+
+  // 180 x 180 mm grid with 10 mm squares
+  const grid = new GridHelper(BUILD_PLATE_SIZE_MM, 18, 0x3b4d5e, 0x2c303a);
+  grid.position.y = 0.05;
   group.add(grid);
 
   const makeAxisLine = (end: [number, number, number], color: number): Line => {
     const geom = new BufferGeometry();
-    geom.setAttribute('position', new BufferAttribute(new Float32Array([0, 0, 0, ...end]), 3));
+    geom.setAttribute('position', new BufferAttribute(new Float32Array([0, 0.1, 0, ...end]), 3));
     const mat = new LineBasicMaterial({ color });
     return new Line(geom, mat);
   };
 
   // +X = Re (red), +Y = Height (green), +Z = Im (blue)
-  group.add(makeAxisLine([2.3, 0, 0], 0xff5555));
+  group.add(makeAxisLine([half + 8, 0.1, 0], 0xff5555));
   group.add(makeAxisLine([0, DEFAULT_AXIS_HEIGHT, 0], 0x55dd77));
-  group.add(makeAxisLine([0, 0, 2.3], 0x5599ff));
+  group.add(makeAxisLine([0, 0.1, half + 8], 0x5599ff));
+
+  // US Quarter scale reference (24.26 mm diameter x 1.75 mm thick) on front-right corner
+  const quarterGeom = new CylinderGeometry(
+    QUARTER_RADIUS_MM,
+    QUARTER_RADIUS_MM,
+    QUARTER_THICKNESS_MM,
+    48,
+  );
+  const quarterMat = new MeshPhysicalMaterial({
+    color: 0xd4d8de,
+    roughness: 0.35,
+    metalness: 0.85,
+  });
+  const quarterMesh = new Mesh(quarterGeom, quarterMat);
+  quarterMesh.position.set(68, QUARTER_THICKNESS_MM / 2, 68);
+  quarterMesh.castShadow = true;
+  quarterMesh.receiveShadow = true;
+  group.add(quarterMesh);
 
   return group;
 }
 
 /**
- * Side-by-side Three.js 3D view that renders stacked level-set curves from `1` to `level`
- * with interactive OrbitControls and a reference coordinate grid/axes.
+ * Side-by-side Three.js 3D view that renders stacked level-set curves or a printable terraced
+ * soap-dish mesh in real-world millimeters (`1 unit = 1 mm`) on a `180 x 180 mm` build plate.
  */
 export class Curve3DView {
   readonly scene: Scene;
@@ -377,14 +602,14 @@ export class Curve3DView {
 
   constructor(
     readonly canvas: HTMLCanvasElement,
-    public heightScale = 0.08,
+    public heightScale = DEFAULT_LAYER_HEIGHT,
     public baseHeight = DEFAULT_BASE_HEIGHT,
   ) {
     this.scene = new Scene();
     this.scene.background = new Color(0x14161c);
 
-    this.camera = new PerspectiveCamera(45, 1, 0.1, 100);
-    this.camera.position.set(3.4, 3.2, 4.2);
+    this.camera = new PerspectiveCamera(45, 1, 1, 2000);
+    this.camera.position.set(145, 135, 185);
 
     this.renderer = new WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -396,7 +621,7 @@ export class Curve3DView {
     pmrem.dispose();
 
     this.controls = new OrbitControls(this.camera, canvas);
-    this.controls.target.set(0, DEFAULT_BASE_HEIGHT * 0.6, 0);
+    this.controls.target.set(0, 10, 0);
     this.controls.update();
     this.controls.addEventListener('change', () => this.render());
 
@@ -404,18 +629,18 @@ export class Curve3DView {
 
     const ambient = new AmbientLight(0xffffff, 0.35);
     const keyLight = new DirectionalLight(0xffffff, 1.3);
-    keyLight.position.set(4.5, 3.2, 4.5);
+    keyLight.position.set(180, 130, 180);
     keyLight.castShadow = true;
     keyLight.shadow.mapSize.set(2048, 2048);
-    keyLight.shadow.camera.left = -2.6;
-    keyLight.shadow.camera.right = 2.6;
-    keyLight.shadow.camera.top = 2.6;
-    keyLight.shadow.camera.bottom = -2.6;
-    keyLight.shadow.camera.near = 1;
-    keyLight.shadow.camera.far = 15;
+    keyLight.shadow.camera.left = -110;
+    keyLight.shadow.camera.right = 110;
+    keyLight.shadow.camera.top = 110;
+    keyLight.shadow.camera.bottom = -110;
+    keyLight.shadow.camera.near = 10;
+    keyLight.shadow.camera.far = 600;
     keyLight.shadow.bias = -0.0005;
     const fillLight = new DirectionalLight(0x88bbff, 0.3);
-    fillLight.position.set(-4, 3, -3);
+    fillLight.position.set(-160, 120, -120);
     this.scene.add(ambient, keyLight, fillLight);
 
     this.curveGroup = new Group();
@@ -462,7 +687,7 @@ export class Curve3DView {
 
     if (viewMode === 'mesh') {
       if (entries.length > 0) {
-        const geometry = buildTerracedMeshGeometry(entries, this.heightScale, this.baseHeight);
+        const geometry = buildTerracedMeshGeometry(entries, this.heightScale);
         const material = new MeshPhysicalMaterial({
           color: 0xffffff,
           roughness: 0.78,

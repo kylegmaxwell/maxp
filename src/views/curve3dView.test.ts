@@ -15,17 +15,17 @@ describe('curve3dView', () => {
     expect(levelToDepth(25)).toBe(7);
   });
 
-  it('converts a 2D contour into 3D [x=re, y=baseHeight-depth*heightScale, z=im] positions', () => {
+  it('converts a 2D contour into metric 3D [x=(re-centerRe)*mm, y=baseHeight-depth*heightScale, z=im*mm] positions', () => {
     const contour = {
       points: [
         [-2, -1] as [number, number],
-        [1.5, 0.5] as [number, number],
+        [1.0, 0.5] as [number, number],
       ],
       closed: true,
     };
-    const pos = contourToPositions(contour, 15, 0.05, 1.3);
-    // level 15 -> depth 6 -> y = 1.3 - 0.30 = 1.0
-    expect(pos).toEqual(new Float32Array([-2, 1.0, -1, 1.5, 1.0, 0.5]));
+    const pos = contourToPositions(contour, 15, 2.0, 45, 50, -0.5);
+    // level 15 -> depth 6 -> y = 45 - 12 = 33; re=-2 -> (-2 - -0.5)*50 = -75, re=1 -> (1 - -0.5)*50 = 75
+    expect(pos).toEqual(new Float32Array([-75, 33, -50, 75, 33, 25]));
   });
 
   it('drops levels 0 and 1 and samples 2..5 by 1 then steps of 10', () => {
@@ -42,12 +42,12 @@ describe('curve3dView', () => {
     expect(stack.map((e) => e.level)).toEqual([2, 2.5]);
   });
 
-  it('creates a reference axes group containing grid and X/Y/Z axis lines', () => {
+  it('creates a metric reference group with build plate, test print line, grid, X/Y/Z axes, and US Quarter', () => {
     const axes = createReferenceAxes();
-    expect(axes.children.length).toBe(4); // GridHelper + 3 axis lines
+    expect(axes.children.length).toBe(7);
   });
 
-  it('builds a sharp terraced mesh for level 3 with 1 cutout and 2 outer bands (including bottom floor)', () => {
+  it('builds a sharp terraced mesh sitting on y=0 with dedicated outer rim and uniform layer heights', () => {
     const outer = {
       points: [
         [-2, -2] as [number, number],
@@ -66,18 +66,20 @@ describe('curve3dView', () => {
       ],
       closed: true,
     };
+    // 2 levels + 1 dedicated outer rim = 3 rings -> y values at 0, 2, 4, 6 mm
     const geom = buildTerracedMeshGeometry(
       [
         { level: 2, contour: outer },
         { level: 3, contour: inner },
       ],
-      0.1,
-      1.0,
+      2.0,
+      10,
+      0,
+      2.0,
     );
     const pos = geom.getAttribute('position');
     expect(pos.count).toBeGreaterThan(0);
 
-    // Level 2 is at y = 0.8, Level 3 cutout floor is at y = 0.7, solid outer base is at y = 0.6
     const yValues = new Set<number>();
     let minY = Infinity;
     for (let i = 0; i < pos.count; i++) {
@@ -85,8 +87,8 @@ describe('curve3dView', () => {
       yValues.add(y);
       minY = Math.min(minY, y);
     }
-    expect(minY).toBeCloseTo(0.6, 5);
-    expect([...yValues].sort((a, b) => a - b)).toEqual([0.6, 0.7, 0.8]);
+    expect(minY).toBeCloseTo(0, 5);
+    expect([...yValues].sort((a, b) => a - b)).toEqual([0, 2, 4, 6]);
 
     // Every triangle has identical vertex colors across its 3 corners (no interpolation)
     const col = geom.getAttribute('color');
@@ -100,13 +102,18 @@ describe('curve3dView', () => {
     const stack = buildLevelStack(10, 90, 1);
     expect(stack.map((e) => e.level)).toEqual([2, 3, 4, 5, 10]);
 
-    const geom = buildTerracedMeshGeometry(stack, 0.08, 1.3);
+    const geom = buildTerracedMeshGeometry(stack, 2.0, 50, -0.5, 2.0);
     const pos = geom.getAttribute('position');
 
-    // No triangle on any terrace above the deepest level (levels 2, 3, 4, 5) should cover the origin (0, 0)
-    for (let k = 0; k < stack.length - 1; k++) {
-      const terraceY = 1.3 - (2 + k) * 0.08;
-      let originCovered = false;
+    // Complex (0, 0) maps to metric (x = 25, z = 0)
+    const cx0 = 25;
+    const cz0 = 0;
+    const totalRings = stack.length + 1; // +1 for outer rim
+
+    // No triangle on any terrace above the deepest level should cover the interior center (25, 0)
+    for (let k = 0; k < totalRings - 1; k++) {
+      const terraceY = (totalRings - k) * 2.0;
+      let centerCovered = false;
       for (let i = 0; i < pos.count; i += 3) {
         const y0 = pos.getY(i);
         const y1 = pos.getY(i + 1);
@@ -118,20 +125,20 @@ describe('curve3dView', () => {
         ) {
           continue;
         }
-        const ax = pos.getX(i), az = pos.getZ(i);
-        const bx = pos.getX(i + 1), bz = pos.getZ(i + 1);
-        const cx = pos.getX(i + 2), cz = pos.getZ(i + 2);
+        const ax = pos.getX(i) - cx0, az = pos.getZ(i) - cz0;
+        const bx = pos.getX(i + 1) - cx0, bz = pos.getZ(i + 1) - cz0;
+        const cx = pos.getX(i + 2) - cx0, cz = pos.getZ(i + 2) - cz0;
         const d1 = -ax * (bz - az) + az * (bx - ax);
         const d2 = -bx * (cz - bz) + bz * (cx - bx);
         const d3 = -cx * (az - cz) + cz * (ax - cx);
         const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
         const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
         if (!(hasNeg && hasPos)) {
-          originCovered = true;
+          centerCovered = true;
           break;
         }
       }
-      expect(originCovered, `terrace k=${k} (level ${stack[k].level}) covered origin`).toBe(false);
+      expect(centerCovered, `terrace k=${k} at y=${terraceY} covered center`).toBe(false);
     }
   });
 });
