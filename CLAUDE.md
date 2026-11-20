@@ -1,7 +1,7 @@
 # Project Overview & Architecture (`CLAUDE.md`)
 
 ## Stack & Hosting
-- **Language/Build:** TypeScript + Vite, running on Node LTS (26, installed via `fnm`; see `WINDOWS.md`).
+- **Language/Build:** TypeScript + Vite, running on Node LTS (26, installed via `fnm`; see `docs/WINDOWS.md`).
 - **Hosting:** Static GitHub Pages project site.
 - **URL Pattern:** `https://kylegmaxwell.github.io/maxp/`
 - **Backend:** None. Serverless architecture using client-side code and browser `localStorage`.
@@ -11,22 +11,28 @@
 
 ## Layout & Commands
 ```
-index.html        # Vite entry (project root)
+index.html        # Vite entry (side-by-side 2D + 3D canvases)
 vite.config.ts
 tsconfig.json
-src/              # all application source (main.ts is the entry)
+src/
+  main.ts         # App entry, GUI, playback, and canvas wiring
+  algorithms/     # Mandelbrot, Buddhabrot, particles, vector field, Marching Squares
+  views/          # 2D canvas views (GridView, ParticleView, PathView, LevelView) & 3D (Curve3DView)
+  math/           # Curve/spline helpers
+docs/             # Project notes, setup, and ideas (IDEAS.md, WINDOWS.md)
 dist/             # build output (not committed)
 ```
 - `npm run dev`: dev server with HMR
 - `npm run build`: `tsc --noEmit && vite build` (Vite does not type-check on its own)
 - `npm run preview`: serve the production build locally
+- `npm test`: `vitest run` (unit tests)
 
 Deployment: build with `npm run build` and publish `dist/` to GitHub Pages (GitHub Actions workflow).
 
 ---
 
 ## Tooling & CLI
-- **GitHub CLI (`gh`):** Use for repo operations and PRs. Setup is in `WINDOWS.md`.
+- **GitHub CLI (`gh`):** Use for repo operations and PRs. Setup is in `docs/WINDOWS.md`.
 - **Pages:** Enable in the repo settings or via `gh api` (verify the exact call before documenting it here).
 
 ---
@@ -43,6 +49,4 @@ Deployment: build with `npm run build` and publish `dist/` to GitHub Pages (GitH
 - **Rule:** Prefix every key with `maxp_`. Access storage only through a single typed wrapper module in `src/` that enforces the prefix:
   ```typescript
   localStorage.setItem('maxp_key_name', JSON.stringify(data));
-  ```
-
   ```

@@ -4,7 +4,7 @@ Playing with fractals. Built with TypeScript and Vite, and hosted as a static si
 
 ## Getting started
 
-Set up Node first (see [WINDOWS.md](WINDOWS.md)). Then:
+Set up Node first (see [docs/WINDOWS.md](docs/WINDOWS.md)). Then:
 
 ```bash
 npm install
@@ -27,8 +27,9 @@ npm run dev
 
 ## Other files
 
-- [WINDOWS.md](WINDOWS.md): Windows / Git Bash setup (`gh`, Node via `fnm`)
+- [docs/WINDOWS.md](docs/WINDOWS.md): Windows / Git Bash setup (`gh`, Node via `fnm`)
 - [CLAUDE.md](CLAUDE.md): guidance for AI assistants
+- [docs/IDEAS.md](docs/IDEAS.md): future ideas and 3D printing / meshing notes
 
 ## License
 
