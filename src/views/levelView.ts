@@ -34,6 +34,33 @@ export function getBandGrid(coarseCells: number, subdiv: number, maxIter: number
 }
 
 /**
+ * Extract all closed contour islands at `level` without artificial 2D bridges.
+ * Every island at `level_B > level_A` is guaranteed to lie strictly inside an island of `level_A`.
+ */
+export function extractLevelIslands(
+  level: number,
+  maxIter: number,
+  coarseCells = 128,
+  subdiv = 4,
+): Contour[] {
+  if (level <= 0) {
+    return [
+      {
+        points: [
+          [-2, -2],
+          [2, -2],
+          [2, 2],
+          [-2, 2],
+        ],
+        closed: true,
+      },
+    ];
+  }
+  const bandGrid = getBandGrid(coarseCells, subdiv, maxIter);
+  return bandGrid.extract(level).filter((c) => c.closed && c.points.length >= 3);
+}
+
+/**
  * Extract a single connected closed contour at `level` (or the `[-2, 2]^2` domain boundary for `level <= 0`).
  */
 export function extractLevelContour(

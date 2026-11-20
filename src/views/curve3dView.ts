@@ -26,7 +26,7 @@ import {
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { largestContour, marchingSquares, type Contour } from '../algorithms/marchingSquares';
-import { extractLevelContour } from './levelView';
+import { extractLevelContour, extractLevelIslands } from './levelView';
 
 export const VIEW3D_MODES = ['curves', 'mesh'] as const;
 export type View3DMode = (typeof VIEW3D_MODES)[number];
@@ -51,13 +51,14 @@ export const DEFAULT_BASE_HEIGHT = 45;
 export interface LevelCurveEntry {
   level: number;
   contour: Contour;
+  islands?: Contour[];
 }
 
 interface ContourStackCache {
   coarseCells: number;
   subdiv: number;
   maxIter: number;
-  byLevel: Map<number, Contour | null>;
+  byLevel: Map<number, { contour: Contour | null; islands: Contour[] }>;
 }
 
 let stackCache: ContourStackCache | null = null;
@@ -67,7 +68,7 @@ function getCachedLevelContour(
   maxIter: number,
   coarseCells: number,
   subdiv: number,
-): Contour | null {
+): { contour: Contour | null; islands: Contour[] } {
   if (
     !stackCache ||
     stackCache.coarseCells !== coarseCells ||
@@ -86,8 +87,10 @@ function getCachedLevelContour(
     return stackCache.byLevel.get(key)!;
   }
   const contour = extractLevelContour(key, maxIter, coarseCells, subdiv);
-  stackCache.byLevel.set(key, contour);
-  return contour;
+  const islands = extractLevelIslands(key, maxIter, coarseCells, subdiv);
+  const entry = { contour, islands };
+  stackCache.byLevel.set(key, entry);
+  return entry;
 }
 
 /**
@@ -132,9 +135,9 @@ export function buildLevelStack(
   }
 
   for (const lvl of sampledLevels) {
-    const contour = getCachedLevelContour(lvl, effectiveMaxIter, coarseCells, subdiv);
+    const { contour, islands } = getCachedLevelContour(lvl, effectiveMaxIter, coarseCells, subdiv);
     if (contour && contour.points.length >= 2) {
-      entries.push({ level: lvl, contour });
+      entries.push({ level: lvl, contour, islands });
     }
   }
 
@@ -168,7 +171,61 @@ export function contourToPositions(
 }
 
 /**
- * Convert a complex-plane contour into cleaned 2D metric `(x, z)` points in mm.
+ * Iteratively prune duplicate vertices, 180-degree backtracking spikes (`A -> B -> A`),
+ * and nearly-collinear midpoints from a closed 2D polygon in mm so Earcut never emits
+ * zero-area triangles whose Float32 normal flips upside-down.
+ */
+function pruneCollinearPoints(pts: Vector2[]): Vector2[] {
+  let out = pts.map((p) => new Vector2(Math.fround(p.x), Math.fround(p.y)));
+  let changed = true;
+  while (changed && out.length >= 4) {
+    changed = false;
+    const nextOut: Vector2[] = [];
+    const n = out.length;
+    for (let i = 0; i < n; i++) {
+      const prev = nextOut.length > 0 ? nextOut[nextOut.length - 1] : out[(i - 1 + n) % n];
+      const curr = out[i];
+      const next = out[(i + 1) % n];
+
+      const ux = prev.x - curr.x;
+      const uy = prev.y - curr.y;
+      const vx = next.x - curr.x;
+      const vy = next.y - curr.y;
+      const uLen = Math.hypot(ux, uy);
+      const vLen = Math.hypot(vx, vy);
+
+      if (uLen <= 1e-4 || vLen <= 1e-4 || Math.hypot(prev.x - next.x, prev.y - next.y) <= 1e-4) {
+        changed = true;
+        continue;
+      }
+
+      const dot = (ux * vx + uy * vy) / (uLen * vLen);
+      const cross = Math.abs(ux * vy - uy * vx) / (uLen * vLen);
+      // Drop strictly collinear midpoints (dot < -0.9999, cross < 1e-4)
+      if (dot < -0.9999 && cross < 1e-4) {
+        changed = true;
+        continue;
+      }
+
+      nextOut.push(curr);
+    }
+    if (nextOut.length > 1) {
+      const first = nextOut[0];
+      const last = nextOut[nextOut.length - 1];
+      if (Math.hypot(first.x - last.x, first.y - last.y) <= 1e-3) {
+        nextOut.pop();
+        changed = true;
+      }
+    }
+    out = nextOut;
+  }
+  return out;
+}
+
+/**
+ * Convert a complex-plane contour into cleaned 2D metric `(x, z)` points in mm,
+ * pruning duplicate points, collinear midpoints, and 180-degree backtracking hair spikes
+ * (`A -> B -> A`) that would create non-manifold edges or zero-area reversed faces.
  */
 function cleanContourPointsMm(
   points: ReadonlyArray<[number, number]>,
@@ -180,18 +237,19 @@ function cleanContourPointsMm(
     const x = (points[i][0] - centerRe) * mmPerUnit;
     const y = points[i][1] * mmPerUnit;
     const prev = out[out.length - 1];
-    if (!prev || Math.hypot(x - prev.x, y - prev.y) > 1e-4) {
+    if (!prev || Math.hypot(x - prev.x, y - prev.y) > 1e-3) {
       out.push(new Vector2(x, y));
     }
   }
   if (out.length > 1) {
     const first = out[0];
     const last = out[out.length - 1];
-    if (Math.hypot(first.x - last.x, first.y - last.y) <= 1e-4) {
+    if (Math.hypot(first.x - last.x, first.y - last.y) <= 1e-3) {
       out.pop();
     }
   }
-  return out;
+
+  return pruneCollinearPoints(out);
 }
 
 /**
@@ -294,8 +352,10 @@ export function expandContourOutward(pts: ReadonlyArray<Vector2>, offsetMm: numb
   const best = largestContour(raw);
   if (!best || best.points.length < 3) return [...pts];
 
-  const out: Vector2[] = best.points.map(
-    ([nx, ny]) => new Vector2(minX + ((nx + 2) / 4) * spanX, minY + ((ny + 2) / 4) * spanY),
+  const out: Vector2[] = pruneCollinearPoints(
+    best.points.map(
+      ([nx, ny]) => new Vector2(minX + ((nx + 2) / 4) * spanX, minY + ((ny + 2) / 4) * spanY),
+    ),
   );
   return ShapeUtils.isClockWise(out) ? out.reverse() : out;
 }
@@ -364,20 +424,26 @@ export function buildTerracedMeshGeometry(
     return inside;
   };
 
-  const levelIslands = entries.map((e, idx) => ({
-    pts: cleanContourPointsMm(e.contour.points, mmPerUnit, centerRe),
-    rgb: layerColor(idx),
-  }));
+  const levelIslands = entries.map((e, idx) => {
+    const srcIslands = e.islands && e.islands.length > 0 ? e.islands : [e.contour];
+    const islands = srcIslands
+      .map((c) => cleanContourPointsMm(c.points, mmPerUnit, centerRe))
+      .filter((pts) => pts.length >= 3 && Math.abs(ShapeUtils.area(pts)) >= 0.25);
+    return {
+      islands,
+      rgb: layerColor(idx),
+    };
+  });
 
-  const rawRings: Array<{ pts: Vector2[]; rgb: [number, number, number] }> = [];
-  if (outerRimOffsetMm > 0 && levelIslands[0].pts.length >= 3) {
+  const rawRings: Array<{ islands: Vector2[][]; rgb: [number, number, number] }> = [];
+  if (outerRimOffsetMm > 0 && levelIslands[0].islands.length > 0) {
     rawRings.push({
-      pts: expandContourOutward(levelIslands[0].pts, outerRimOffsetMm),
+      islands: [expandContourOutward(levelIslands[0].islands[0], outerRimOffsetMm)],
       rgb: rimRgb,
     });
   }
   for (const l of levelIslands) {
-    if (l.pts.length >= 3) {
+    if (l.islands.length > 0) {
       rawRings.push(l);
     }
   }
@@ -386,7 +452,7 @@ export function buildTerracedMeshGeometry(
   // Dish sits directly on y = 0: deepest floor is at y = heightScale, top rim at y = totalLayers * heightScale
   const rings = rawRings.map((r, idx) => ({
     y: (totalLayers - idx) * heightScale,
-    islands: [r.pts],
+    islands: r.islands,
     rgb: r.rgb,
   }));
 
@@ -401,7 +467,51 @@ export function buildTerracedMeshGeometry(
     const ccwOuter = ShapeUtils.isClockWise(outer) ? [...outer].reverse() : outer;
     const cwHoles = holes.map((h) => (ShapeUtils.isClockWise(h) ? h : [...h].reverse()));
     const allPts = ccwOuter.concat(...cwHoles);
-    const tris = ShapeUtils.triangulateShape(ccwOuter, cwHoles);
+    const earcutOuter = ccwOuter.map((p) => new Vector2(-p.x, -p.y));
+    const earcutHoles = cwHoles.map((h) => h.map((p) => new Vector2(-p.x, -p.y)));
+    const tris = ShapeUtils.triangulateShape(earcutOuter, earcutHoles);
+    const area2 = (i0: number, i1: number, i2: number): number => {
+      const p0 = allPts[i0];
+      const p1 = allPts[i1];
+      const p2 = allPts[i2];
+      return (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
+    };
+
+    // Unfold any degenerate/reflex sliver ear (area2 <= 0) by flipping its shared diagonal
+    // with the adjacent triangle in the quad, preserving 100% manifold boundary half-edges.
+    for (let pass = 0; pass < 3; pass++) {
+      let fixed = false;
+      for (let i = 0; i < tris.length; i++) {
+        const t = tris[i];
+        if (area2(t[0], t[1], t[2]) > 1e-7) continue;
+
+        for (let e = 0; e < 3; e++) {
+          const ia = t[(e + 2) % 3];
+          const ib = t[e];
+          const ic = t[(e + 1) % 3];
+          let found = false;
+          for (let j = 0; j < tris.length; j++) {
+            if (j === i) continue;
+            const nTri = tris[j];
+            for (let ne = 0; ne < 3; ne++) {
+              if (nTri[ne] === ia && nTri[(ne + 1) % 3] === ic) {
+                const id = nTri[(ne + 2) % 3];
+                if (area2(ia, ib, id) > 1e-7 && area2(ib, ic, id) > 1e-7) {
+                  tris[i] = [ia, ib, id];
+                  tris[j] = [ib, ic, id];
+                  fixed = true;
+                  found = true;
+                }
+                break;
+              }
+            }
+            if (found) break;
+          }
+          if (found) break;
+        }
+      }
+      if (!fixed) break;
+    }
     const [r, g, b] = rgb;
     for (const [ia, ib, ic] of tris) {
       const va = allPts[ia];
@@ -454,7 +564,8 @@ export function buildTerracedMeshGeometry(
       });
       addCap(outer, holes, curr.y, curr.rgb, true);
       for (const hole of holes) {
-        addWall(hole, curr.y, next.y, curr.rgb);
+        const ccwHole = ShapeUtils.isClockWise(hole) ? [...hole].reverse() : hole;
+        addWall(ccwHole, curr.y, next.y, curr.rgb, true);
       }
     }
   }
@@ -466,7 +577,11 @@ export function buildTerracedMeshGeometry(
   }
 
   // Outer wall subdivided at every layer height plus one solid floor step below deepest.y
-  const outermost = rings[0]?.islands[0];
+  const rawOutermost = rings[0]?.islands[0];
+  const outermost =
+    rawOutermost && ShapeUtils.isClockWise(rawOutermost)
+      ? [...rawOutermost].reverse()
+      : rawOutermost;
   const dishBaseY = deepest.y - heightScale;
   if (outermost && outermost.length >= 3) {
     const outerSlices: Array<{ y: number; rgb: [number, number, number] }> = rings.map((r) => ({
@@ -478,7 +593,7 @@ export function buildTerracedMeshGeometry(
     for (let s = 0; s < outerSlices.length - 1; s++) {
       const top = outerSlices[s];
       const bot = outerSlices[s + 1];
-      addWall(outermost, top.y, bot.y, top.rgb, true);
+      addWall(outermost, top.y, bot.y, top.rgb, false);
     }
     addCap(outermost, [], dishBaseY, deepest.rgb, false);
   }
