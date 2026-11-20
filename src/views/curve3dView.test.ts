@@ -8,11 +8,11 @@ import {
 } from './curve3dView';
 
 describe('curve3dView', () => {
-  it('maps levels 1:1 up to 6 and 10:1 above 6', () => {
-    expect(levelToDepth(1)).toBe(1);
-    expect(levelToDepth(6)).toBe(6);
-    expect(levelToDepth(16)).toBe(7);
-    expect(levelToDepth(26)).toBe(8);
+  it('maps levels 1:1 up to 5 and 10:1 above 5', () => {
+    expect(levelToDepth(2)).toBe(2);
+    expect(levelToDepth(5)).toBe(5);
+    expect(levelToDepth(15)).toBe(6);
+    expect(levelToDepth(25)).toBe(7);
   });
 
   it('converts a 2D contour into 3D [x=re, y=baseHeight-depth*heightScale, z=im] positions', () => {
@@ -23,14 +23,14 @@ describe('curve3dView', () => {
       ],
       closed: true,
     };
-    const pos = contourToPositions(contour, 16, 0.05, 1.3);
-    // level 16 -> depth 7 -> y = 1.3 - 0.35 = 0.95
-    expect(pos).toEqual(new Float32Array([-2, 0.95, -1, 1.5, 0.95, 0.5]));
+    const pos = contourToPositions(contour, 15, 0.05, 1.3);
+    // level 15 -> depth 6 -> y = 1.3 - 0.30 = 1.0
+    expect(pos).toEqual(new Float32Array([-2, 1.0, -1, 1.5, 1.0, 0.5]));
   });
 
-  it('drops levels 0 and 1 and samples 2..6 by 1 then steps of 10', () => {
+  it('drops levels 0 and 1 and samples 2..5 by 1 then steps of 10', () => {
     const stack = buildLevelStack(28, 50, 0.5);
-    expect(stack.map((e) => e.level)).toEqual([2, 3, 4, 5, 6, 16, 26, 28]);
+    expect(stack.map((e) => e.level)).toEqual([2, 3, 4, 5, 15, 25, 28]);
     for (const entry of stack) {
       expect(entry.contour.closed).toBe(true);
       expect(entry.contour.points.length).toBeGreaterThanOrEqual(4);
@@ -47,7 +47,7 @@ describe('curve3dView', () => {
     expect(axes.children.length).toBe(4); // GridHelper + 3 axis lines
   });
 
-  it('builds a sharp terraced mesh with bottom cap one level below the deepest contour', () => {
+  it('builds a sharp terraced mesh for level 3 with 1 cutout and 2 outer bands (including bottom floor)', () => {
     const outer = {
       points: [
         [-2, -2] as [number, number],
@@ -76,11 +76,23 @@ describe('curve3dView', () => {
     );
     const pos = geom.getAttribute('position');
     expect(pos.count).toBeGreaterThan(0);
-    // Deepest contour is level 3 -> y = 1.0 - 0.3 = 0.7; bottom cap is one step below at y = 0.6
+
+    // Level 2 is at y = 0.8, Level 3 cutout floor is at y = 0.7, solid outer base is at y = 0.6
+    const yValues = new Set<number>();
     let minY = Infinity;
     for (let i = 0; i < pos.count; i++) {
-      minY = Math.min(minY, pos.getY(i));
+      const y = Math.round(pos.getY(i) * 1e5) / 1e5;
+      yValues.add(y);
+      minY = Math.min(minY, y);
     }
     expect(minY).toBeCloseTo(0.6, 5);
+    expect([...yValues].sort((a, b) => a - b)).toEqual([0.6, 0.7, 0.8]);
+
+    // Every triangle has identical vertex colors across its 3 corners (no interpolation)
+    const col = geom.getAttribute('color');
+    for (let i = 0; i < col.count; i += 3) {
+      expect(col.getX(i)).toBeCloseTo(col.getX(i + 1), 6);
+      expect(col.getX(i)).toBeCloseTo(col.getX(i + 2), 6);
+    }
   });
 });

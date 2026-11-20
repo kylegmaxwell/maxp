@@ -18,6 +18,7 @@ const MAX_ITER = 500;
 const params: {
   mode: Mode;
   view3d: View3DMode;
+  wireframe: boolean;
   iter: number;
   level: number;
   res: number;
@@ -26,8 +27,9 @@ const params: {
 } = {
   mode: 'mandelbrot',
   view3d: 'mesh',
-  iter: 50,
-  level: 0,
+  wireframe: false,
+  iter: 90,
+  level: 10,
   res: 1,
   fps: 10,
   play: false,
@@ -96,7 +98,7 @@ function composeFrame(): void {
   }
   const activeLevel = trace instanceof LevelView ? trace.level : params.level;
   const effectiveIter = trace instanceof LevelView ? trace.effectiveIter : params.iter;
-  curve3dView.update(activeLevel, effectiveIter, params.res, params.view3d);
+  curve3dView.update(activeLevel, effectiveIter, params.res, params.view3d, params.wireframe);
 }
 
 function renderFrame(): void {
@@ -179,8 +181,10 @@ const gui = new GUI({ title: 'Fractal' });
 gui.domElement.style.left = '50%';
 gui.domElement.style.right = 'auto';
 gui.domElement.style.transform = 'translateX(-50%)';
+gui.close();
 gui.add(params, 'mode', [...MODES]).onChange(rebuild);
 gui.add(params, 'view3d', [...VIEW3D_MODES]).onChange(composeFrame);
+const wireframeController = gui.add(params, 'wireframe').onChange(composeFrame);
 // Setting the iteration directly re-simulates from the start at that value
 const iterController = gui.add(params, 'iter', 1, MAX_ITER, 1).onFinishChange(rebuild);
 const levelController = gui.add(params, 'level', 0, MAX_ITER/10, 1).onChange((n: number) => {
@@ -258,6 +262,17 @@ canvas.addEventListener('contextmenu', (e: MouseEvent) => {
   params.level = 0;
   levelController.updateDisplay();
   composeFrame();
+});
+
+window.addEventListener('keydown', (e: KeyboardEvent) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const tag = (e.target as HTMLElement | null)?.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+  if (e.key.toLowerCase() === 'w') {
+    params.wireframe = !params.wireframe;
+    wireframeController.updateDisplay();
+    composeFrame();
+  }
 });
 
 window.addEventListener('resize', rebuild);

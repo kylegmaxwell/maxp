@@ -12,6 +12,7 @@ import {
   LineLoop,
   Mesh,
   MeshPhysicalMaterial,
+  PCFSoftShadowMap,
   PerspectiveCamera,
   PMREMGenerator,
   Scene,
@@ -74,18 +75,18 @@ function getCachedLevelContour(
 
 /**
  * Map a contour `level` to vertical depth units:
- * linear (`1:1`) up to level `6`, then compressed `10:1` above `6` so high levels
- * advance by 1 vertical step per 10 levels.
+ * linear (`1:1`) up to level `5`, then compressed `10:1` above `5` so high levels
+ * advance by 1 vertical step per 10 levels (`15 -> 6`, `25 -> 7`, ...).
  */
 export function levelToDepth(level: number): number {
-  if (level <= 6) return level;
-  return 6 + (level - 6) / 10;
+  if (level <= 5) return level;
+  return 5 + (level - 5) / 10;
 }
 
 /**
  * Extract level-set contours from level `2` up to `maxLevel`:
- * - levels `2 .. 6` in steps of `1`
- * - levels `> 6` in steps of `10` (`16, 26, ...`)
+ * - levels `2 .. 5` in steps of `1`
+ * - levels `> 5` in steps of `10` (`15, 25, ...`)
  * - plus `maxLevel` itself when not already included.
  */
 export function buildLevelStack(
@@ -102,10 +103,10 @@ export function buildLevelStack(
   const entries: LevelCurveEntry[] = [];
 
   const sampledLevels: number[] = [];
-  for (let lvl = 2; lvl <= Math.min(6, Math.floor(clampedMax)); lvl++) {
+  for (let lvl = 2; lvl <= Math.min(5, Math.floor(clampedMax)); lvl++) {
     sampledLevels.push(lvl);
   }
-  for (let lvl = 16; lvl <= Math.floor(clampedMax); lvl += 10) {
+  for (let lvl = 15; lvl <= Math.floor(clampedMax); lvl += 10) {
     sampledLevels.push(lvl);
   }
   const lastSampled = sampledLevels.length > 0 ? sampledLevels[sampledLevels.length - 1] : 0;
@@ -170,6 +171,7 @@ function cleanContourPoints(points: ReadonlyArray<[number, number]>): Vector2[] 
 
 function pushTri(
   positions: number[],
+  colors: number[],
   ax: number,
   ay: number,
   az: number,
@@ -179,8 +181,12 @@ function pushTri(
   cx: number,
   cy: number,
   cz: number,
+  r: number,
+  g: number,
+  b: number,
 ): void {
   positions.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+  colors.push(r, g, b, r, g, b, r, g, b);
 }
 
 /**
@@ -188,7 +194,10 @@ function pushTri(
  * - Each consecutive pair `(k, k+1)` gets a flat horizontal terrace at `y_k`
  *   (from outer contour `k` to inner hole `k+1`) and a vertical drop wall along `k+1`
  *   from `y_k` down to `y_{k+1}`.
- * - The deepest contour extrudes down by one `heightScale` step and is capped flat.
+ * - The deepest contour is capped flat at `y_last` (its own level height).
+ * - The outer contour extrudes down through every layer height to `y_last - heightScale`
+ *   and is capped flat at the bottom, giving a solid floor of thickness `heightScale`.
+ * - Each layer uses a flat (non-interpolated) rotating rainbow vertex color.
  */
 export function buildTerracedMeshGeometry(
   entries: ReadonlyArray<LevelCurveEntry>,
@@ -196,62 +205,106 @@ export function buildTerracedMeshGeometry(
   baseHeight = DEFAULT_BASE_HEIGHT,
 ): BufferGeometry {
   const positions: number[] = [];
+  const colors: number[] = [];
   if (entries.length === 0) {
     const empty = new BufferGeometry();
     empty.setAttribute('position', new BufferAttribute(new Float32Array(0), 3));
     return empty;
   }
 
-  const rings = entries.map((e) => ({
-    y: baseHeight - levelToDepth(e.level) * heightScale,
+  const roygbiv = [0xef4444, 0xf97316, 0xeab308, 0x22c55e, 0x3b82f6, 0x4f46e5, 0xa855f7];
+  const layerColor = (idx: number): [number, number, number] => {
+    const c = new Color(roygbiv[idx % roygbiv.length]);
+    return [c.r, c.g, c.b];
+  };
+
+  const rings = entries.map((e, idx) => ({
+    y: baseHeight - (2 + idx) * heightScale,
     pts: cleanContourPoints(e.contour.points),
+    rgb: layerColor(idx),
   }));
 
-  const addCap = (outer: Vector2[], holes: Vector2[][], y: number, flip: boolean): void => {
+  const addCap = (
+    outer: Vector2[],
+    holes: Vector2[][],
+    y: number,
+    rgb: [number, number, number],
+    flip: boolean,
+  ): void => {
     if (outer.length < 3) return;
     const allPts = outer.concat(...holes);
     const tris = ShapeUtils.triangulateShape(outer, holes);
+    const [r, g, b] = rgb;
     for (const [ia, ib, ic] of tris) {
-      const a = allPts[ia];
-      const b = allPts[ib];
-      const c = allPts[ic];
+      const va = allPts[ia];
+      const vb = allPts[ib];
+      const vc = allPts[ic];
       if (flip) {
-        pushTri(positions, a.x, y, a.y, c.x, y, c.y, b.x, y, b.y);
+        pushTri(positions, colors, va.x, y, va.y, vc.x, y, vc.y, vb.x, y, vb.y, r, g, b);
       } else {
-        pushTri(positions, a.x, y, a.y, b.x, y, b.y, c.x, y, c.y);
+        pushTri(positions, colors, va.x, y, va.y, vb.x, y, vb.y, vc.x, y, vc.y, r, g, b);
       }
     }
   };
 
-  const addWall = (pts: Vector2[], yTop: number, yBot: number): void => {
+  const addWall = (
+    pts: Vector2[],
+    yTop: number,
+    yBot: number,
+    rgb: [number, number, number],
+    flip = false,
+  ): void => {
     const n = pts.length;
+    const [r, g, b] = rgb;
     for (let i = 0; i < n; i++) {
       const p0 = pts[i];
       const p1 = pts[(i + 1) % n];
-      pushTri(positions, p0.x, yTop, p0.y, p1.x, yTop, p1.y, p1.x, yBot, p1.y);
-      pushTri(positions, p0.x, yTop, p0.y, p1.x, yBot, p1.y, p0.x, yBot, p0.y);
+      if (flip) {
+        pushTri(positions, colors, p0.x, yTop, p0.y, p1.x, yBot, p1.y, p1.x, yTop, p1.y, r, g, b);
+        pushTri(positions, colors, p0.x, yTop, p0.y, p0.x, yBot, p0.y, p1.x, yBot, p1.y, r, g, b);
+      } else {
+        pushTri(positions, colors, p0.x, yTop, p0.y, p1.x, yTop, p1.y, p1.x, yBot, p1.y, r, g, b);
+        pushTri(positions, colors, p0.x, yTop, p0.y, p1.x, yBot, p1.y, p0.x, yBot, p0.y, r, g, b);
+      }
     }
   };
 
   for (let k = 0; k < rings.length - 1; k++) {
     const curr = rings[k];
     const next = rings[k + 1];
-    addCap(curr.pts, next.pts.length >= 3 ? [next.pts] : [], curr.y, true);
+    addCap(curr.pts, next.pts.length >= 3 ? [next.pts] : [], curr.y, curr.rgb, true);
     if (next.pts.length >= 3) {
-      addWall(next.pts, curr.y, next.y);
+      addWall(next.pts, curr.y, next.y, curr.rgb);
     }
   }
 
-  // Deepest level extrudes down by one level step and caps flat at the bottom
+  // Deepest contour is capped flat at its own height (no extra double-drop)
   const deepest = rings[rings.length - 1];
-  const bottomY = deepest.y - heightScale;
   if (deepest.pts.length >= 3) {
-    addWall(deepest.pts, deepest.y, bottomY);
-    addCap(deepest.pts, [], bottomY, true);
+    addCap(deepest.pts, [], deepest.y, deepest.rgb, true);
+  }
+
+  // Outer wall subdivided at every layer height plus one solid floor step below deepest.y
+  const outermost = rings[0];
+  const dishBaseY = deepest.y - heightScale;
+  if (outermost.pts.length >= 3) {
+    const outerSlices: Array<{ y: number; rgb: [number, number, number] }> = rings.map((r) => ({
+      y: r.y,
+      rgb: r.rgb,
+    }));
+    outerSlices.push({ y: dishBaseY, rgb: deepest.rgb });
+
+    for (let s = 0; s < outerSlices.length - 1; s++) {
+      const top = outerSlices[s];
+      const bot = outerSlices[s + 1];
+      addWall(outermost.pts, top.y, bot.y, top.rgb, true);
+    }
+    addCap(outermost.pts, [], dishBaseY, deepest.rgb, false);
   }
 
   const geom = new BufferGeometry();
   geom.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+  geom.setAttribute('color', new BufferAttribute(new Float32Array(colors), 3));
   geom.computeVertexNormals();
   return geom;
 }
@@ -306,6 +359,8 @@ export class Curve3DView {
 
     this.renderer = new WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = PCFSoftShadowMap;
 
     const pmrem = new PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
@@ -318,10 +373,19 @@ export class Curve3DView {
 
     this.scene.add(createReferenceAxes());
 
-    const ambient = new AmbientLight(0xffffff, 0.55);
-    const keyLight = new DirectionalLight(0xffffff, 1.1);
-    keyLight.position.set(4, 7, 5);
-    const fillLight = new DirectionalLight(0x88bbff, 0.45);
+    const ambient = new AmbientLight(0xffffff, 0.35);
+    const keyLight = new DirectionalLight(0xffffff, 1.3);
+    keyLight.position.set(4.5, 3.2, 4.5);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    keyLight.shadow.camera.left = -2.6;
+    keyLight.shadow.camera.right = 2.6;
+    keyLight.shadow.camera.top = 2.6;
+    keyLight.shadow.camera.bottom = -2.6;
+    keyLight.shadow.camera.near = 1;
+    keyLight.shadow.camera.far = 15;
+    keyLight.shadow.bias = -0.0005;
+    const fillLight = new DirectionalLight(0x88bbff, 0.3);
     fillLight.position.set(-4, 3, -3);
     this.scene.add(ambient, keyLight, fillLight);
 
@@ -355,7 +419,13 @@ export class Curve3DView {
   /**
    * Rebuild the 3D geometry for levels `2 .. maxLevel` and render a frame.
    */
-  update(maxLevel: number, maxIter: number, res = 1, viewMode: View3DMode = 'mesh'): void {
+  update(
+    maxLevel: number,
+    maxIter: number,
+    res = 1,
+    viewMode: View3DMode = 'mesh',
+    wireframe = false,
+  ): void {
     this.clearCurves();
 
     const entries = buildLevelStack(maxLevel, maxIter, res);
@@ -365,14 +435,19 @@ export class Curve3DView {
       if (entries.length > 0) {
         const geometry = buildTerracedMeshGeometry(entries, this.heightScale, this.baseHeight);
         const material = new MeshPhysicalMaterial({
-          color: 0x22c55e,
+          color: 0xffffff,
           roughness: 0.78,
           metalness: 0.0,
           clearcoat: 0,
+          vertexColors: true,
+          wireframe,
           side: DoubleSide,
           flatShading: true,
         });
-        this.curveGroup.add(new Mesh(geometry, material));
+        const mesh = new Mesh(geometry, material);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        this.curveGroup.add(mesh);
       }
       this.render();
       return;
