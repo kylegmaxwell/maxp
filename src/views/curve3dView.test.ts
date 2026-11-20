@@ -4,6 +4,7 @@ import {
   buildTerracedMeshGeometry,
   contourToPositions,
   createReferenceAxes,
+  geometryToBinarySTL,
   levelToDepth,
 } from './curve3dView';
 
@@ -140,5 +141,37 @@ describe('curve3dView', () => {
       }
       expect(centerCovered, `terrace k=${k} at y=${terraceY} covered center`).toBe(false);
     }
+  });
+
+  it('exports a Z-up binary STL sitting on Z=0 for Bambu Studio', () => {
+    const outer = {
+      points: [
+        [-2, -2] as [number, number],
+        [2, -2] as [number, number],
+        [2, 2] as [number, number],
+        [-2, 2] as [number, number],
+      ],
+      closed: true,
+    };
+    const geom = buildTerracedMeshGeometry([{ level: 2, contour: outer }], 2.0, 10, 0, 2.0);
+    const numTris = Math.floor(geom.getAttribute('position').count / 3);
+    const buffer = geometryToBinarySTL(geom);
+
+    expect(buffer.byteLength).toBe(84 + numTris * 50);
+    const view = new DataView(buffer);
+    expect(view.getUint32(80, true)).toBe(numTris);
+
+    let minZ = Infinity;
+    let maxZ = -Infinity;
+    for (let t = 0; t < numTris; t++) {
+      const base = 84 + t * 50;
+      for (const vOff of [12, 24, 36]) {
+        const z = view.getFloat32(base + vOff + 8, true);
+        if (z < minZ) minZ = z;
+        if (z > maxZ) maxZ = z;
+      }
+    }
+    expect(minZ).toBeCloseTo(0, 5);
+    expect(maxZ).toBeCloseTo(4.0, 5);
   });
 });

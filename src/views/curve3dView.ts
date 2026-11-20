@@ -491,6 +491,82 @@ export function buildTerracedMeshGeometry(
 }
 
 /**
+ * Convert a Y-up Three.js `BufferGeometry` (in mm, sitting on `y = 0`) into a binary STL
+ * `ArrayBuffer` rotated `+90°` around X (`(x, y, z) -> (x, -z, y)`) so the dish sits flat
+ * on the `Z = 0` build plate in Bambu Studio / 3D slicers with outward normals preserved.
+ */
+export function geometryToBinarySTL(geometry: BufferGeometry): ArrayBuffer {
+  const pos = geometry.getAttribute('position');
+  const numTris = Math.floor(pos.count / 3);
+  const buffer = new ArrayBuffer(84 + numTris * 50);
+  const view = new DataView(buffer);
+
+  const header = 'Mandelbrot Soap Dish (mm)';
+  for (let i = 0; i < header.length && i < 80; i++) {
+    view.setUint8(i, header.charCodeAt(i));
+  }
+  view.setUint32(80, numTris, true);
+
+  let offset = 84;
+  for (let t = 0; t < numTris; t++) {
+    const i0 = t * 3;
+    const i1 = i0 + 1;
+    const i2 = i0 + 2;
+
+    // Rotate Y-up (x, y, z) -> Z-up (x, -z, y)
+    const ax = pos.getX(i0);
+    const ay = -pos.getZ(i0);
+    const az = pos.getY(i0);
+
+    const bx = pos.getX(i1);
+    const by = -pos.getZ(i1);
+    const bz = pos.getY(i1);
+
+    const cx = pos.getX(i2);
+    const cy = -pos.getZ(i2);
+    const cz = pos.getY(i2);
+
+    const ux = bx - ax;
+    const uy = by - ay;
+    const uz = bz - az;
+    const vx = cx - ax;
+    const vy = cy - ay;
+    const vz = cz - az;
+
+    let nx = uy * vz - uz * vy;
+    let ny = uz * vx - ux * vz;
+    let nz = ux * vy - uy * vx;
+    const nLen = Math.hypot(nx, ny, nz);
+    if (nLen > 0) {
+      nx /= nLen;
+      ny /= nLen;
+      nz /= nLen;
+    }
+
+    view.setFloat32(offset, nx, true);
+    view.setFloat32(offset + 4, ny, true);
+    view.setFloat32(offset + 8, nz, true);
+
+    view.setFloat32(offset + 12, ax, true);
+    view.setFloat32(offset + 16, ay, true);
+    view.setFloat32(offset + 20, az, true);
+
+    view.setFloat32(offset + 24, bx, true);
+    view.setFloat32(offset + 28, by, true);
+    view.setFloat32(offset + 32, bz, true);
+
+    view.setFloat32(offset + 36, cx, true);
+    view.setFloat32(offset + 40, cy, true);
+    view.setFloat32(offset + 44, cz, true);
+
+    view.setUint16(offset + 48, 0, true);
+    offset += 50;
+  }
+
+  return buffer;
+}
+
+/**
  * Create a Three.js metric reference group (`1 unit = 1 mm`) with:
  * - A `180 x 180 mm` Bambu A1 mini build plate (`y in [-1.2, 0]`) with front cutout notch
  *   and front L-shaped calibration test print lines
@@ -742,5 +818,25 @@ export class Curve3DView {
   /** Render the Three.js scene onto `#canvas3d`. */
   render(): void {
     this.renderer.render(this.scene, this.camera);
+  }
+
+  /**
+   * Build and download a binary `.stl` file of the terraced soap dish for the given level stack.
+   */
+  exportSTL(maxLevel: number, maxIter: number, res = 1): void {
+    const entries = buildLevelStack(maxLevel, maxIter, res);
+    if (entries.length === 0) return;
+
+    const geometry = buildTerracedMeshGeometry(entries, this.heightScale);
+    const stlBuffer = geometryToBinarySTL(geometry);
+    geometry.dispose();
+
+    const blob = new Blob([stlBuffer], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mandelbrot-dish-L${Math.round(maxLevel)}.stl`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 }

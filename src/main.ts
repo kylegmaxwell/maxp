@@ -221,6 +221,16 @@ gui.add(
   },
   'clearTrace',
 );
+gui.add(
+  {
+    exportSTL: () => {
+      const activeLevel = trace instanceof LevelView ? trace.level : params.level;
+      const effectiveIter = trace instanceof LevelView ? trace.effectiveIter : params.iter;
+      curve3dView.exportSTL(activeLevel, effectiveIter, params.res);
+    },
+  },
+  'exportSTL',
+);
 
 let dragging = false;
 
