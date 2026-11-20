@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildLevelStack,
+  buildTerracedMeshGeometry,
   contourToPositions,
   createReferenceAxes,
   levelToDepth,
@@ -44,5 +45,42 @@ describe('curve3dView', () => {
   it('creates a reference axes group containing grid and X/Y/Z axis lines', () => {
     const axes = createReferenceAxes();
     expect(axes.children.length).toBe(4); // GridHelper + 3 axis lines
+  });
+
+  it('builds a sharp terraced mesh with bottom cap one level below the deepest contour', () => {
+    const outer = {
+      points: [
+        [-2, -2] as [number, number],
+        [2, -2] as [number, number],
+        [2, 2] as [number, number],
+        [-2, 2] as [number, number],
+      ],
+      closed: true,
+    };
+    const inner = {
+      points: [
+        [-1, -1] as [number, number],
+        [1, -1] as [number, number],
+        [1, 1] as [number, number],
+        [-1, 1] as [number, number],
+      ],
+      closed: true,
+    };
+    const geom = buildTerracedMeshGeometry(
+      [
+        { level: 2, contour: outer },
+        { level: 3, contour: inner },
+      ],
+      0.1,
+      1.0,
+    );
+    const pos = geom.getAttribute('position');
+    expect(pos.count).toBeGreaterThan(0);
+    // Deepest contour is level 3 -> y = 1.0 - 0.3 = 0.7; bottom cap is one step below at y = 0.6
+    let minY = Infinity;
+    for (let i = 0; i < pos.count; i++) {
+      minY = Math.min(minY, pos.getY(i));
+    }
+    expect(minY).toBeCloseTo(0.6, 5);
   });
 });

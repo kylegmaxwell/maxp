@@ -1,21 +1,30 @@
 import {
+  AmbientLight,
   BufferAttribute,
   BufferGeometry,
   Color,
+  DirectionalLight,
+  DoubleSide,
   GridHelper,
   Group,
   Line,
   LineBasicMaterial,
   LineLoop,
+  Mesh,
+  MeshPhysicalMaterial,
   PerspectiveCamera,
+  PMREMGenerator,
   Scene,
+  ShapeUtils,
+  Vector2,
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import type { Contour } from '../algorithms/marchingSquares';
 import { extractLevelContour } from './levelView';
 
-export const VIEW3D_MODES = ['curves'] as const;
+export const VIEW3D_MODES = ['curves', 'mesh'] as const;
 export type View3DMode = (typeof VIEW3D_MODES)[number];
 
 export const DEFAULT_AXIS_HEIGHT = 2.6;
@@ -139,6 +148,114 @@ export function contourToPositions(
   return out;
 }
 
+/** Remove consecutive near-duplicate points from a closed contour. */
+function cleanContourPoints(points: ReadonlyArray<[number, number]>): Vector2[] {
+  const out: Vector2[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const [x, y] = points[i];
+    const prev = out[out.length - 1];
+    if (!prev || Math.hypot(x - prev.x, y - prev.y) > 1e-6) {
+      out.push(new Vector2(x, y));
+    }
+  }
+  if (out.length > 1) {
+    const first = out[0];
+    const last = out[out.length - 1];
+    if (Math.hypot(first.x - last.x, first.y - last.y) <= 1e-6) {
+      out.pop();
+    }
+  }
+  return out;
+}
+
+function pushTri(
+  positions: number[],
+  ax: number,
+  ay: number,
+  az: number,
+  bx: number,
+  by: number,
+  bz: number,
+  cx: number,
+  cy: number,
+  cz: number,
+): void {
+  positions.push(ax, ay, az, bx, by, bz, cx, cy, cz);
+}
+
+/**
+ * Build a sharp terraced 3D mesh from stacked level-set contours:
+ * - Each consecutive pair `(k, k+1)` gets a flat horizontal terrace at `y_k`
+ *   (from outer contour `k` to inner hole `k+1`) and a vertical drop wall along `k+1`
+ *   from `y_k` down to `y_{k+1}`.
+ * - The deepest contour extrudes down by one `heightScale` step and is capped flat.
+ */
+export function buildTerracedMeshGeometry(
+  entries: ReadonlyArray<LevelCurveEntry>,
+  heightScale = 0.08,
+  baseHeight = DEFAULT_BASE_HEIGHT,
+): BufferGeometry {
+  const positions: number[] = [];
+  if (entries.length === 0) {
+    const empty = new BufferGeometry();
+    empty.setAttribute('position', new BufferAttribute(new Float32Array(0), 3));
+    return empty;
+  }
+
+  const rings = entries.map((e) => ({
+    y: baseHeight - levelToDepth(e.level) * heightScale,
+    pts: cleanContourPoints(e.contour.points),
+  }));
+
+  const addCap = (outer: Vector2[], holes: Vector2[][], y: number, flip: boolean): void => {
+    if (outer.length < 3) return;
+    const allPts = outer.concat(...holes);
+    const tris = ShapeUtils.triangulateShape(outer, holes);
+    for (const [ia, ib, ic] of tris) {
+      const a = allPts[ia];
+      const b = allPts[ib];
+      const c = allPts[ic];
+      if (flip) {
+        pushTri(positions, a.x, y, a.y, c.x, y, c.y, b.x, y, b.y);
+      } else {
+        pushTri(positions, a.x, y, a.y, b.x, y, b.y, c.x, y, c.y);
+      }
+    }
+  };
+
+  const addWall = (pts: Vector2[], yTop: number, yBot: number): void => {
+    const n = pts.length;
+    for (let i = 0; i < n; i++) {
+      const p0 = pts[i];
+      const p1 = pts[(i + 1) % n];
+      pushTri(positions, p0.x, yTop, p0.y, p1.x, yTop, p1.y, p1.x, yBot, p1.y);
+      pushTri(positions, p0.x, yTop, p0.y, p1.x, yBot, p1.y, p0.x, yBot, p0.y);
+    }
+  };
+
+  for (let k = 0; k < rings.length - 1; k++) {
+    const curr = rings[k];
+    const next = rings[k + 1];
+    addCap(curr.pts, next.pts.length >= 3 ? [next.pts] : [], curr.y, true);
+    if (next.pts.length >= 3) {
+      addWall(next.pts, curr.y, next.y);
+    }
+  }
+
+  // Deepest level extrudes down by one level step and caps flat at the bottom
+  const deepest = rings[rings.length - 1];
+  const bottomY = deepest.y - heightScale;
+  if (deepest.pts.length >= 3) {
+    addWall(deepest.pts, deepest.y, bottomY);
+    addCap(deepest.pts, [], bottomY, true);
+  }
+
+  const geom = new BufferGeometry();
+  geom.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+  geom.computeVertexNormals();
+  return geom;
+}
+
 /**
  * Create a Three.js coordinate reference group with:
  * - A `[-2, 2] x [-2, 2]` grid on the `y = 0` plane
@@ -190,12 +307,23 @@ export class Curve3DView {
     this.renderer = new WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
+    const pmrem = new PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.target.set(0, DEFAULT_BASE_HEIGHT * 0.6, 0);
     this.controls.update();
     this.controls.addEventListener('change', () => this.render());
 
     this.scene.add(createReferenceAxes());
+
+    const ambient = new AmbientLight(0xffffff, 0.55);
+    const keyLight = new DirectionalLight(0xffffff, 1.1);
+    keyLight.position.set(4, 7, 5);
+    const fillLight = new DirectionalLight(0x88bbff, 0.45);
+    fillLight.position.set(-4, 3, -3);
+    this.scene.add(ambient, keyLight, fillLight);
 
     this.curveGroup = new Group();
     this.scene.add(this.curveGroup);
@@ -209,11 +337,11 @@ export class Curve3DView {
     this.render();
   }
 
-  /** Remove and dispose all existing 3D curve geometries and materials. */
+  /** Remove and dispose all existing 3D geometries and materials. */
   private clearCurves(): void {
     while (this.curveGroup.children.length > 0) {
       const obj = this.curveGroup.children.pop()!;
-      if (obj instanceof Line) {
+      if (obj instanceof Line || obj instanceof Mesh) {
         obj.geometry.dispose();
         if (Array.isArray(obj.material)) {
           for (const m of obj.material) m.dispose();
@@ -225,13 +353,30 @@ export class Curve3DView {
   }
 
   /**
-   * Rebuild the 3D geometry for levels `1 .. maxLevel` and render a frame.
+   * Rebuild the 3D geometry for levels `2 .. maxLevel` and render a frame.
    */
-  update(maxLevel: number, maxIter: number, res = 1, _viewMode: View3DMode = 'curves'): void {
+  update(maxLevel: number, maxIter: number, res = 1, viewMode: View3DMode = 'mesh'): void {
     this.clearCurves();
 
     const entries = buildLevelStack(maxLevel, maxIter, res);
     const topLevel = entries.length > 0 ? entries[entries.length - 1].level : 0;
+
+    if (viewMode === 'mesh') {
+      if (entries.length > 0) {
+        const geometry = buildTerracedMeshGeometry(entries, this.heightScale, this.baseHeight);
+        const material = new MeshPhysicalMaterial({
+          color: 0x22c55e,
+          roughness: 0.78,
+          metalness: 0.0,
+          clearcoat: 0,
+          side: DoubleSide,
+          flatShading: true,
+        });
+        this.curveGroup.add(new Mesh(geometry, material));
+      }
+      this.render();
+      return;
+    }
 
     for (let i = 0; i < entries.length; i++) {
       const { level, contour } = entries[i];

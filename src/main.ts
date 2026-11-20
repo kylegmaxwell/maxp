@@ -25,7 +25,7 @@ const params: {
   play: boolean;
 } = {
   mode: 'mandelbrot',
-  view3d: 'curves',
+  view3d: 'mesh',
   iter: 50,
   level: 0,
   res: 1,
