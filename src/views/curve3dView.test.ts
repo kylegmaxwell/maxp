@@ -95,4 +95,43 @@ describe('curve3dView', () => {
       expect(col.getX(i)).toBeCloseTo(col.getX(i + 2), 6);
     }
   });
+
+  it('keeps the interior cutout open for Mandelbrot level stack 2..10', () => {
+    const stack = buildLevelStack(10, 90, 1);
+    expect(stack.map((e) => e.level)).toEqual([2, 3, 4, 5, 10]);
+
+    const geom = buildTerracedMeshGeometry(stack, 0.08, 1.3);
+    const pos = geom.getAttribute('position');
+
+    // No triangle on any terrace above the deepest level (levels 2, 3, 4, 5) should cover the origin (0, 0)
+    for (let k = 0; k < stack.length - 1; k++) {
+      const terraceY = 1.3 - (2 + k) * 0.08;
+      let originCovered = false;
+      for (let i = 0; i < pos.count; i += 3) {
+        const y0 = pos.getY(i);
+        const y1 = pos.getY(i + 1);
+        const y2 = pos.getY(i + 2);
+        if (
+          Math.abs(y0 - terraceY) > 1e-4 ||
+          Math.abs(y1 - terraceY) > 1e-4 ||
+          Math.abs(y2 - terraceY) > 1e-4
+        ) {
+          continue;
+        }
+        const ax = pos.getX(i), az = pos.getZ(i);
+        const bx = pos.getX(i + 1), bz = pos.getZ(i + 1);
+        const cx = pos.getX(i + 2), cz = pos.getZ(i + 2);
+        const d1 = -ax * (bz - az) + az * (bx - ax);
+        const d2 = -bx * (cz - bz) + bz * (cx - bx);
+        const d3 = -cx * (az - cz) + cz * (ax - cx);
+        const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
+        const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
+        if (!(hasNeg && hasPos)) {
+          originCovered = true;
+          break;
+        }
+      }
+      expect(originCovered, `terrace k=${k} (level ${stack[k].level}) covered origin`).toBe(false);
+    }
+  });
 });

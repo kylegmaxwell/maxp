@@ -218,9 +218,23 @@ export function buildTerracedMeshGeometry(
     return [c.r, c.g, c.b];
   };
 
+  const pointInPoly = (pt: Vector2, poly: Vector2[]): boolean => {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x;
+      const yi = poly[i].y;
+      const xj = poly[j].x;
+      const yj = poly[j].y;
+      if (yi > pt.y !== yj > pt.y && pt.x < ((xj - xi) * (pt.y - yi)) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  };
+
   const rings = entries.map((e, idx) => ({
     y: baseHeight - (2 + idx) * heightScale,
-    pts: cleanContourPoints(e.contour.points),
+    islands: [cleanContourPoints(e.contour.points)].filter((pts) => pts.length >= 3),
     rgb: layerColor(idx),
   }));
 
@@ -232,8 +246,10 @@ export function buildTerracedMeshGeometry(
     flip: boolean,
   ): void => {
     if (outer.length < 3) return;
-    const allPts = outer.concat(...holes);
-    const tris = ShapeUtils.triangulateShape(outer, holes);
+    const ccwOuter = ShapeUtils.isClockWise(outer) ? [...outer].reverse() : outer;
+    const cwHoles = holes.map((h) => (ShapeUtils.isClockWise(h) ? h : [...h].reverse()));
+    const allPts = ccwOuter.concat(...cwHoles);
+    const tris = ShapeUtils.triangulateShape(ccwOuter, cwHoles);
     const [r, g, b] = rgb;
     for (const [ia, ib, ic] of tris) {
       const va = allPts[ia];
@@ -272,22 +288,35 @@ export function buildTerracedMeshGeometry(
   for (let k = 0; k < rings.length - 1; k++) {
     const curr = rings[k];
     const next = rings[k + 1];
-    addCap(curr.pts, next.pts.length >= 3 ? [next.pts] : [], curr.y, curr.rgb, true);
-    if (next.pts.length >= 3) {
-      addWall(next.pts, curr.y, next.y, curr.rgb);
+    for (const outer of curr.islands) {
+      const holes = next.islands.filter((hole) => {
+        // Test interior points (including centroid / sample points) so boundary touch at (-2, 0) doesn't miss
+        let insideCount = 0;
+        const step = Math.max(1, Math.floor(hole.length / 8));
+        let tested = 0;
+        for (let i = 0; i < hole.length; i += step) {
+          tested++;
+          if (pointInPoly(hole[i], outer)) insideCount++;
+        }
+        return insideCount > tested / 2;
+      });
+      addCap(outer, holes, curr.y, curr.rgb, true);
+      for (const hole of holes) {
+        addWall(hole, curr.y, next.y, curr.rgb);
+      }
     }
   }
 
-  // Deepest contour is capped flat at its own height (no extra double-drop)
+  // Deepest contour islands are capped flat at their own height (no extra double-drop)
   const deepest = rings[rings.length - 1];
-  if (deepest.pts.length >= 3) {
-    addCap(deepest.pts, [], deepest.y, deepest.rgb, true);
+  for (const island of deepest.islands) {
+    addCap(island, [], deepest.y, deepest.rgb, true);
   }
 
   // Outer wall subdivided at every layer height plus one solid floor step below deepest.y
-  const outermost = rings[0];
+  const outermost = rings[0]?.islands[0];
   const dishBaseY = deepest.y - heightScale;
-  if (outermost.pts.length >= 3) {
+  if (outermost && outermost.length >= 3) {
     const outerSlices: Array<{ y: number; rgb: [number, number, number] }> = rings.map((r) => ({
       y: r.y,
       rgb: r.rgb,
@@ -297,9 +326,9 @@ export function buildTerracedMeshGeometry(
     for (let s = 0; s < outerSlices.length - 1; s++) {
       const top = outerSlices[s];
       const bot = outerSlices[s + 1];
-      addWall(outermost.pts, top.y, bot.y, top.rgb, true);
+      addWall(outermost, top.y, bot.y, top.rgb, true);
     }
-    addCap(outermost.pts, [], dishBaseY, deepest.rgb, false);
+    addCap(outermost, [], dishBaseY, deepest.rgb, false);
   }
 
   const geom = new BufferGeometry();

@@ -185,7 +185,16 @@ function extractFromIndexedCells(
     }
   }
 
-  // Stitch segments into ordered polylines
+  return stitchAdjacency(vertices, adj);
+}
+
+/**
+ * Stitch an undirected edge/vertex adjacency graph into ordered `Contour` polylines.
+ */
+function stitchAdjacency(
+  vertices: Map<number, [number, number]>,
+  adj: Map<number, number[]>,
+): Contour[] {
   const visited = new Set<number>();
   const contours: Contour[] = [];
   const openPaths: Array<Array<[number, number]>> = [];
@@ -209,7 +218,6 @@ function extractFromIndexedCells(
     return points;
   };
 
-  // Collect all open paths starting at degree-1 boundary nodes
   for (const [id, neighbors] of adj) {
     if (neighbors.length === 1 && !visited.has(id)) {
       const pts = walkPoints(id);
@@ -217,8 +225,6 @@ function extractFromIndexedCells(
     }
   }
 
-  // Chain open boundary arcs (e.g. when a contour grazes the [-2, 2] box edges at (-2, 0) or level = 1)
-  // by repeatedly joining the closest boundary endpoints instead of closing each arc with an interior chord.
   while (openPaths.length > 0) {
     const chain = openPaths.shift()!;
     while (openPaths.length > 0) {
@@ -245,7 +251,6 @@ function extractFromIndexedCells(
         }
       }
 
-      // Only chain open arcs whose boundary endpoints meet near the same boundary touch point
       const dSelf2 = (chain[0][0] - tail[0]) ** 2 + (chain[0][1] - tail[1]) ** 2;
       if (bestIdx < 0 || dSelf2 <= bestD2) break;
 
@@ -259,7 +264,6 @@ function extractFromIndexedCells(
     contours.push({ points: chain, closed: closedOnBoundary });
   }
 
-  // Remaining unvisited nodes form closed loops (all degree 2)
   for (const [id] of adj) {
     if (!visited.has(id)) {
       const pts = walkPoints(id);
@@ -268,6 +272,306 @@ function extractFromIndexedCells(
   }
 
   return contours;
+}
+
+/**
+ * 2D Dual Contouring extractor on indexed active coarse cells.
+ *
+ * Unlike Marching Squares (which places vertices on grid edges and connects them with straight
+ * segments across each cell), Dual Contouring places one vertex *inside* each active cell at the
+ * intersection of the contour tangent lines from the cell's edge crossings:
+ *
+ * 1. **Edge crossings**: For each active cell edge, bisects `field` to find the exact point `p_i`
+ *    where `field(x, y) = level`, and samples central differences of `field` to get the unit
+ *    normal `n_i` of the contour at `p_i`.
+ * 2. **QEF (Quadratic Error Function)**: Finds the cell vertex `v` that minimizes the sum of
+ *    squared distances to the tangent lines at the two edge crossings `p_0, p_1`:
+ *      `E(v) = (n_0 . (v - p_0))^2 + (n_1 . (v - p_1))^2 + lambda * ||v - mid||^2`
+ *    where `lambda` regularizes the 2x2 linear system toward the midpoint `mid = (p_0 + p_1) / 2`
+ *    when the two normals are nearly parallel. The solved vertex is clamped to the bounding box
+ *    of `p_0` and `p_1` so sharp spikes cannot overshoot the crossings.
+ * 3. **Dual stitching**: Connects dual cell vertices across every shared active grid edge.
+ */
+function extractDualContours(
+  values: Float32Array | Float64Array,
+  width: number,
+  height: number,
+  level: number,
+  field: (re: number, im: number) => number,
+  activeCoarseCells: ReadonlyArray<readonly [number, number]>,
+  subdiv: number,
+): Contour[] {
+  const cols = width - 1;
+  const rows = height - 1;
+  const cstep = 4 / cols;
+  const rstep = 4 / rows;
+  const vOffset = height * cols;
+  const gradH = Math.min(cstep, rstep) * 0.05;
+
+  interface EdgeCrossing {
+    px: number;
+    py: number;
+    nx: number;
+    ny: number;
+  }
+
+  const edgeCache = new Map<number, EdgeCrossing>();
+  const edgeToDuals = new Map<number, number[]>();
+  const vertices = new Map<number, [number, number]>();
+  const adj = new Map<number, number[]>();
+
+  // On the outer border of [-2, 2]^2, |c| >= 2 everywhere (which corresponds to level <= 1),
+  // except at the single grid point (-2, 0) where the Mandelbrot antenna touches the border
+  // with value = maxIter. Clamping that border vertex to 1 for levels > 1 makes the horizontal
+  // edge from (-2, 0) [value 1] to (-2 + cstep, 0) [value maxIter] interpolate t = (level - 1) / (maxIter - 1),
+  // so each higher level closes strictly further inside the cell (nested left tips: minX(2) < minX(3) < minX(4)...).
+  const valAt = (r: number, c: number): number => {
+    const v = values[r * width + c];
+    if (level > 1 && (r === 0 || r === rows || c === 0 || c === cols)) {
+      return Math.min(v, 1);
+    }
+    return v;
+  };
+
+  const solveEdge = (
+    id: number,
+    ax: number,
+    ay: number,
+    va: number,
+    bx: number,
+    by: number,
+    vb: number,
+    onBoundary: boolean,
+  ): EdgeCrossing => {
+    const cached = edgeCache.get(id);
+    if (cached) return cached;
+
+    let t = vb === va ? 0.5 : Math.min(1, Math.max(0, (level - va) / (vb - va)));
+    const aHigh = va >= level;
+    const bHigh = vb >= level;
+    if (aHigh !== bHigh && !onBoundary) {
+      let lo = 0;
+      let hi = 1;
+      for (let k = 0; k < 6; k++) {
+        const mid = 0.5 * (lo + hi);
+        const vm = field(ax + mid * (bx - ax), ay + mid * (by - ay));
+        if ((vm >= level) === aHigh) lo = mid;
+        else hi = mid;
+      }
+      t = 0.5 * (lo + hi);
+    }
+
+    const px = ax + t * (bx - ax);
+    const py = ay + t * (by - ay);
+    let nx = 0;
+    let ny = 0;
+    if (onBoundary) {
+      const edx = bx - ax;
+      const edy = by - ay;
+      const eLen = Math.hypot(edx, edy) || 1;
+      const sign = vb >= va ? 1 : -1;
+      nx = (sign * edx) / eLen;
+      ny = (sign * edy) / eLen;
+    } else {
+      const gx = (field(px + gradH, py) - field(px - gradH, py)) / (2 * gradH);
+      const gy = (field(px, py + gradH) - field(px, py - gradH)) / (2 * gradH);
+      const gLen = Math.hypot(gx, gy);
+      nx = gLen > 1e-10 ? gx / gLen : 0;
+      ny = gLen > 1e-10 ? gy / gLen : 0;
+    }
+
+    const crossing = { px, py, nx, ny };
+    edgeCache.set(id, crossing);
+    return crossing;
+  };
+
+  const isBoundaryVertex = (r: number, c: number): boolean =>
+    level > 1 && (r === 0 || r === rows || c === 0 || c === cols) && values[r * width + c] > 1;
+
+  const getCellEdge = (r: number, c: number, edge: number): { id: number; crossing: EdgeCrossing } => {
+    if (edge === 0) {
+      const id = r * cols + c;
+      const x0 = -2 + c * cstep;
+      const y0 = -2 + r * rstep;
+      return {
+        id,
+        crossing: solveEdge(
+          id,
+          x0,
+          y0,
+          valAt(r, c),
+          x0 + cstep,
+          y0,
+          valAt(r, c + 1),
+          isBoundaryVertex(r, c) || isBoundaryVertex(r, c + 1),
+        ),
+      };
+    }
+    if (edge === 2) {
+      const id = (r + 1) * cols + c;
+      const x0 = -2 + c * cstep;
+      const y1 = -2 + (r + 1) * rstep;
+      return {
+        id,
+        crossing: solveEdge(
+          id,
+          x0,
+          y1,
+          valAt(r + 1, c),
+          x0 + cstep,
+          y1,
+          valAt(r + 1, c + 1),
+          isBoundaryVertex(r + 1, c) || isBoundaryVertex(r + 1, c + 1),
+        ),
+      };
+    }
+    if (edge === 1) {
+      const id = vOffset + r * width + (c + 1);
+      const x1 = -2 + (c + 1) * cstep;
+      const y0 = -2 + r * rstep;
+      return {
+        id,
+        crossing: solveEdge(
+          id,
+          x1,
+          y0,
+          valAt(r, c + 1),
+          x1,
+          y0 + rstep,
+          valAt(r + 1, c + 1),
+          isBoundaryVertex(r, c + 1) || isBoundaryVertex(r + 1, c + 1),
+        ),
+      };
+    }
+    const id = vOffset + r * width + c;
+    const x0 = -2 + c * cstep;
+    const y0 = -2 + r * rstep;
+    return {
+      id,
+      crossing: solveEdge(
+        id,
+        x0,
+        y0,
+        valAt(r, c),
+        x0,
+        y0 + rstep,
+        valAt(r + 1, c),
+        isBoundaryVertex(r, c) || isBoundaryVertex(r + 1, c),
+      ),
+    };
+  };
+
+  const solveQEF = (
+    c0: EdgeCrossing,
+    c1: EdgeCrossing,
+  ): [number, number] => {
+    const mx = 0.5 * (c0.px + c1.px);
+    const my = 0.5 * (c0.py + c1.py);
+
+    // Regularized 2x2 QEF around the crossing midpoint
+    const lambda = 0.05;
+    const a00 = c0.nx * c0.nx + c1.nx * c1.nx + lambda;
+    const a01 = c0.nx * c0.ny + c1.nx * c1.ny;
+    const a11 = c0.ny * c0.ny + c1.ny * c1.ny + lambda;
+
+    const d0 = c0.nx * (c0.px - mx) + c0.ny * (c0.py - my);
+    const d1 = c1.nx * (c1.px - mx) + c1.ny * (c1.py - my);
+    const b0 = c0.nx * d0 + c1.nx * d1;
+    const b1 = c0.ny * d0 + c1.ny * d1;
+
+    const det = a00 * a11 - a01 * a01;
+    let vx = mx;
+    let vy = my;
+    if (Math.abs(det) > 1e-12) {
+      vx = mx + (a11 * b0 - a01 * b1) / det;
+      vy = my + (-a01 * b0 + a00 * b1) / det;
+    }
+
+    // Clamp to the bounding box of the two edge crossings so sharp spikes
+    // cannot overshoot to the cell boundary wall and collide across nested levels.
+    const minX = Math.min(c0.px, c1.px);
+    const maxX = Math.max(c0.px, c1.px);
+    const minY = Math.min(c0.py, c1.py);
+    const maxY = Math.max(c0.py, c1.py);
+
+    return [
+      Math.min(maxX, Math.max(minX, vx)),
+      Math.min(maxY, Math.max(minY, vy)),
+    ];
+  };
+
+  const registerPair = (r: number, c: number, dualId: number, eA: number, eB: number): void => {
+    const edgeA = getCellEdge(r, c, eA);
+    const edgeB = getCellEdge(r, c, eB);
+    vertices.set(dualId, solveQEF(edgeA.crossing, edgeB.crossing));
+    for (const eId of [edgeA.id, edgeB.id]) {
+      let list = edgeToDuals.get(eId);
+      if (!list) {
+        list = [];
+        edgeToDuals.set(eId, list);
+      }
+      list.push(dualId);
+    }
+  };
+
+  for (const [cr, cc] of activeCoarseCells) {
+    const r0 = cr * subdiv;
+    const c0 = cc * subdiv;
+    for (let dr = 0; dr < subdiv; dr++) {
+      const r = r0 + dr;
+      for (let dc = 0; dc < subdiv; dc++) {
+        const c = c0 + dc;
+        const v0 = valAt(r, c);
+        const v1 = valAt(r, c + 1);
+        const v2 = valAt(r + 1, c + 1);
+        const v3 = valAt(r + 1, c);
+
+        const mask =
+          (v0 >= level ? 8 : 0) |
+          (v1 >= level ? 4 : 0) |
+          (v2 >= level ? 2 : 0) |
+          (v3 >= level ? 1 : 0);
+
+        if (mask === 0 || mask === 15) continue;
+
+        const baseId = (r * cols + c) * 2;
+        const single = SINGLE_SEGMENTS[mask];
+        if (single) {
+          registerPair(r, c, baseId, single[0], single[1]);
+        } else {
+          const centerHigh = 0.25 * (v0 + v1 + v2 + v3) >= level;
+          if ((mask === 5 && centerHigh) || (mask === 10 && !centerHigh)) {
+            registerPair(r, c, baseId, 3, 0);
+            registerPair(r, c, baseId + 1, 2, 1);
+          } else {
+            registerPair(r, c, baseId, 0, 1);
+            registerPair(r, c, baseId + 1, 3, 2);
+          }
+        }
+      }
+    }
+  }
+
+  for (const pair of edgeToDuals.values()) {
+    if (pair.length === 2) {
+      const [a, b] = pair;
+      let la = adj.get(a);
+      if (!la) {
+        la = [];
+        adj.set(a, la);
+      }
+      la.push(b);
+
+      let lb = adj.get(b);
+      if (!lb) {
+        lb = [];
+        adj.set(b, lb);
+      }
+      lb.push(a);
+    }
+  }
+
+  return stitchAdjacency(vertices, adj);
 }
 
 /**
@@ -429,7 +733,7 @@ export class BandContourGrid {
     }
 
     if (active.length === 0) return [];
-    return extractFromIndexedCells(fineValues, fineSize, fineSize, level, active, subdiv);
+    return extractDualContours(fineValues, fineSize, fineSize, level, field, active, subdiv);
   }
 }
 

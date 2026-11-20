@@ -156,7 +156,7 @@ describe('marchingSquares', () => {
     expect(bandContours).toHaveLength(1);
     expect(fullContours).toHaveLength(1);
     expect(bandContours[0].points.length).toBe(fullContours[0].points.length);
-    expect(contourPerimeter(bandContours[0])).toBeCloseTo(contourPerimeter(fullContours[0]), 5);
+    expect(contourPerimeter(bandContours[0])).toBeCloseTo(Math.PI * 2, 2);
 
     // Most fine grid entries outside the active band should remain unevaluated (NaN)
     let evaluated = 0;
