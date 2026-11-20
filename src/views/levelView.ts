@@ -15,7 +15,7 @@ interface BandCache {
 
 let cachedBand: BandCache | null = null;
 
-function getBandGrid(coarseCells: number, subdiv: number, maxIter: number): BandContourGrid {
+export function getBandGrid(coarseCells: number, subdiv: number, maxIter: number): BandContourGrid {
   if (
     cachedBand &&
     cachedBand.coarseCells === coarseCells &&
@@ -31,6 +31,36 @@ function getBandGrid(coarseCells: number, subdiv: number, maxIter: number): Band
   );
   cachedBand = { coarseCells, subdiv, maxIter, grid };
   return grid;
+}
+
+/**
+ * Extract a single connected closed contour at `level` (or the `[-2, 2]^2` domain boundary for `level <= 0`).
+ */
+export function extractLevelContour(
+  level: number,
+  maxIter: number,
+  coarseCells = 128,
+  subdiv = 4,
+): Contour | null {
+  if (level <= 0) {
+    return {
+      points: [
+        [-2, -2],
+        [2, -2],
+        [2, 2],
+        [-2, 2],
+      ],
+      closed: true,
+    };
+  }
+  const bandGrid = getBandGrid(coarseCells, subdiv, maxIter);
+  const rawContours = bandGrid.extract(level);
+  return connectAndRefineContours(
+    rawContours,
+    level,
+    bandGrid.field,
+    4 / bandGrid.fineCells,
+  );
 }
 
 /**
@@ -100,14 +130,7 @@ export class LevelView implements Renderable {
   ): { contours: Contour[]; primary: Contour | null; level: number } {
     const maxIter = this.effectiveIter;
     const level = this.level;
-    const bandGrid = getBandGrid(coarseCells, subdiv, maxIter);
-    const rawContours = bandGrid.extract(level);
-    const connected = connectAndRefineContours(
-      rawContours,
-      level,
-      bandGrid.field,
-      4 / bandGrid.fineCells,
-    );
+    const connected = extractLevelContour(level, maxIter, coarseCells, subdiv);
     const contours = connected ? [connected] : [];
     return { contours, primary: connected, level };
   }

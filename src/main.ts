@@ -1,6 +1,7 @@
 import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 import { BuddhabrotGrid } from './algorithms/buddhabrot';
 import { MandelbrotGrid } from './algorithms/mandelbrot';
+import { Curve3DView, VIEW3D_MODES, type View3DMode } from './views/curve3dView';
 import { GridView } from './views/gridView';
 import { LevelView } from './views/levelView';
 import { ParticleView } from './views/particleView';
@@ -14,8 +15,17 @@ type Mode = (typeof MODES)[number];
 const MAX_ITER = 500;
 
 // Values controlled by the GUI
-const params: { mode: Mode; iter: number; level: number; res: number; fps: number; play: boolean } = {
+const params: {
+  mode: Mode;
+  view3d: View3DMode;
+  iter: number;
+  level: number;
+  res: number;
+  fps: number;
+  play: boolean;
+} = {
   mode: 'mandelbrot',
+  view3d: 'curves',
   iter: 50,
   level: 0,
   res: 1,
@@ -25,6 +35,8 @@ const params: { mode: Mode; iter: number; level: number; res: number; fps: numbe
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
+const canvas3d = document.getElementById('canvas3d') as HTMLCanvasElement;
+const curve3dView = new Curve3DView(canvas3d);
 // Offscreen buffer holding the latest base fractal render so dragging the trace
 // overlay composites at 60fps without re-running the underlying simulation.
 const baseCanvas = document.createElement('canvas');
@@ -82,6 +94,9 @@ function composeFrame(): void {
     trace.iter = params.iter;
     trace.render(ctx);
   }
+  const activeLevel = trace instanceof LevelView ? trace.level : params.level;
+  const effectiveIter = trace instanceof LevelView ? trace.effectiveIter : params.iter;
+  curve3dView.update(activeLevel, effectiveIter, params.res, params.view3d);
 }
 
 function renderFrame(): void {
@@ -92,12 +107,19 @@ function renderFrame(): void {
 
 /** Start over: new canvas size, new renderer, and a full render at `params.iter`. */
 function rebuild(): void {
-  // The viewport is square, so use the shorter window side
-  const size = Math.floor(Math.min(window.innerWidth, window.innerHeight));
+  const portrait = window.innerHeight > window.innerWidth;
+  // Square 2D fractal canvas, with the 3D view filling the remaining height/width
+  const size = portrait
+    ? Math.floor(Math.min(window.innerWidth, window.innerHeight / 2))
+    : Math.floor(Math.min(window.innerWidth / 2, window.innerHeight));
+  const width3d = portrait ? window.innerWidth : window.innerWidth - size;
+  const height3d = portrait ? window.innerHeight - size : window.innerHeight;
+
   canvas.width = size;
   canvas.height = size;
   baseCanvas.width = size;
   baseCanvas.height = size;
+  curve3dView.setSize(width3d, height3d);
 
   // Linebrot fades what is already on the canvas, so give it a black backdrop
   baseCtx.fillStyle = '#000';
@@ -154,7 +176,11 @@ function pause(): void {
 }
 
 const gui = new GUI({ title: 'Fractal' });
+gui.domElement.style.left = '50%';
+gui.domElement.style.right = 'auto';
+gui.domElement.style.transform = 'translateX(-50%)';
 gui.add(params, 'mode', [...MODES]).onChange(rebuild);
+gui.add(params, 'view3d', [...VIEW3D_MODES]).onChange(composeFrame);
 // Setting the iteration directly re-simulates from the start at that value
 const iterController = gui.add(params, 'iter', 1, MAX_ITER, 1).onFinishChange(rebuild);
 const levelController = gui.add(params, 'level', 0, MAX_ITER/10, 1).onChange((n: number) => {

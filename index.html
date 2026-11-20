@@ -12,6 +12,17 @@
         overflow: hidden;
         background: #111;
       }
+      body {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: center;
+      }
+      @media (max-aspect-ratio: 1/1) {
+        body {
+          flex-direction: column;
+        }
+      }
       canvas {
         display: block;
       }
@@ -19,6 +30,7 @@
   </head>
   <body>
     <canvas id="canvas"></canvas>
+    <canvas id="canvas3d"></canvas>
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>
