@@ -1,3 +1,4 @@
+import { Color } from 'three';
 import { describe, expect, it } from 'vitest';
 import {
   buildLevelStack,
@@ -231,6 +232,45 @@ describe('curve3dView', () => {
       expect(upsideDownCapTris, `lvl=${maxLvl} upsideDownCapTris`).toBe(0);
       expect(duplicateHalfEdges, `lvl=${maxLvl} duplicateHalfEdges`).toBe(0);
       expect(unmatchedEdges, `lvl=${maxLvl} unmatchedEdges`).toBe(0);
+    }
+  });
+
+  it('colors 6-layer default stack (level 15 + outer rim) with green base, two black layers, then gray for the rest', () => {
+    const stack = buildLevelStack(15, 90, 1);
+    expect(stack.map((e) => e.level)).toEqual([2, 3, 4, 5, 15]);
+
+    const geom = buildTerracedMeshGeometry(stack, 2.0, 50, -0.5, 2.0);
+    const pos = geom.getAttribute('position');
+    const col = geom.getAttribute('color');
+
+    const colorAtY = (targetY: number): [number, number, number] => {
+      for (let i = 0; i < pos.count; i += 3) {
+        if (
+          Math.abs(pos.getY(i) - targetY) < 1e-4 &&
+          Math.abs(pos.getY(i + 1) - targetY) < 1e-4 &&
+          Math.abs(pos.getY(i + 2) - targetY) < 1e-4
+        ) {
+          return [col.getX(i), col.getY(i), col.getZ(i)];
+        }
+      }
+      throw new Error(`No horizontal cap found at y=${targetY}`);
+    };
+
+    const expectedHexes = [
+      0x22c55e, // y=2: green (base)
+      0x1c1e22, // y=4: black
+      0x1c1e22, // y=6: black
+      0x717680, // y=8: gray
+      0x717680, // y=10: gray
+      0x717680, // y=12: gray (outer rim)
+    ];
+    const heights = [2, 4, 6, 8, 10, 12];
+    for (let idx = 0; idx < heights.length; idx++) {
+      const [r, g, b] = colorAtY(heights[idx]);
+      const exp = new Color(expectedHexes[idx]);
+      expect(r).toBeCloseTo(exp.r, 4);
+      expect(g).toBeCloseTo(exp.g, 4);
+      expect(b).toBeCloseTo(exp.b, 4);
     }
   });
 });

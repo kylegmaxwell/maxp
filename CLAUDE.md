@@ -19,13 +19,14 @@ src/
   algorithms/     # Mandelbrot, Buddhabrot, particles, vector field, Marching Squares
   views/          # 2D canvas views (GridView, ParticleView, PathView, LevelView) & 3D (Curve3DView)
   math/           # Curve/spline helpers
-docs/             # Project notes, setup, and ideas (IDEAS.md, WINDOWS.md)
+docs/             # Project notes, setup, and ideas (PROJECT.md, IDEAS.md, WINDOWS.md)
 dist/             # build output (not committed)
 ```
 - `npm run dev`: dev server with HMR
 - `npm run build`: `tsc --noEmit && vite build` (Vite does not type-check on its own)
 - `npm run preview`: serve the production build locally
 - `npm test`: `vitest run` (unit tests)
+- **PowerShell note:** `fnm env` can hit symlink permission errors and `npm.ps1` may be blocked by execution policy; prepend `%APPDATA%\fnm\node-versions\<version>\installation` to `PATH` and use `npm.cmd`.
 
 Deployment: build with `npm run build` and publish `dist/` to GitHub Pages (GitHub Actions workflow).
 

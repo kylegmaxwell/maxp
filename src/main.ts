@@ -1,39 +1,23 @@
 import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 import { BuddhabrotGrid } from './algorithms/buddhabrot';
 import { MandelbrotGrid } from './algorithms/mandelbrot';
-import { Curve3DView, VIEW3D_MODES, type View3DMode } from './views/curve3dView';
+import {
+  DEFAULT_PARAMS,
+  MAX_ITER,
+  MODES,
+  VIEW3D_MODES,
+  type AppParams,
+  type Mode,
+} from './config';
+import { Curve3DView } from './views/curve3dView';
 import { GridView } from './views/gridView';
 import { LevelView } from './views/levelView';
 import { ParticleView } from './views/particleView';
 import { PathView, pixelToComplex } from './views/pathView';
 import type { Renderable } from './views/renderable';
 
-const MODES = ['mandelbrot', 'buddhabrot', 'partibrot', 'linebrot', 'vectorbrot'] as const;
-type Mode = (typeof MODES)[number];
-
-/** Playback stops when the iteration count reaches this. */
-const MAX_ITER = 500;
-
 // Values controlled by the GUI
-const params: {
-  mode: Mode;
-  view3d: View3DMode;
-  wireframe: boolean;
-  iter: number;
-  level: number;
-  res: number;
-  fps: number;
-  play: boolean;
-} = {
-  mode: 'mandelbrot',
-  view3d: 'mesh',
-  wireframe: false,
-  iter: 90,
-  level: 10,
-  res: 1,
-  fps: 10,
-  play: false,
-};
+const params: AppParams = { ...DEFAULT_PARAMS };
 
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;

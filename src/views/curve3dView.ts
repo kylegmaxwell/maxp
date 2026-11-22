@@ -26,10 +26,14 @@ import {
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { largestContour, marchingSquares, type Contour } from '../algorithms/marchingSquares';
+import {
+  PRINT_PREVIEW_PALETTE,
+  VIEW3D_MODES,
+  type View3DMode,
+} from '../config';
 import { extractLevelContour, extractLevelIslands } from './levelView';
 
-export const VIEW3D_MODES = ['curves', 'mesh'] as const;
-export type View3DMode = (typeof VIEW3D_MODES)[number];
+export { VIEW3D_MODES, type View3DMode };
 
 /** Real-world metric scale: 1 Three.js unit = 1 mm (50 mm per complex unit => Level 2 is 150 mm long). */
 export const MM_PER_UNIT = 50;
@@ -383,9 +387,11 @@ function pushTri(
 /**
  * Build a sharp terraced 3D mesh in millimeters (`1 unit = 1 mm`) sitting on `y = 0`:
  * - Prepends a dedicated outer rim shell expanded outward by `outerRimOffsetMm` (`2.0 mm`)
- *   around the outermost level in a neutral slate color (`0xd1d5db`).
- * - Mathematical levels `2 .. maxLevel` step downward by `heightScale` (`2.0 mm`) per layer
- *   in ROYGBIV colors, with a `heightScale` solid floor sitting directly on the `y = 0` build plate.
+ *   around the outermost level.
+ * - Mathematical levels `2 .. maxLevel` step downward by `heightScale` (`2.0 mm`) per layer,
+ *   with a `heightScale` solid floor sitting directly on the `y = 0` build plate.
+ * - Layers are colored from bottom (base) to top for 4-color print preview:
+ *   base green, then black, then gray, then white.
  */
 export function buildTerracedMeshGeometry(
   entries: ReadonlyArray<LevelCurveEntry>,
@@ -402,13 +408,11 @@ export function buildTerracedMeshGeometry(
     return empty;
   }
 
-  const roygbiv = [0xef4444, 0xf97316, 0xeab308, 0x22c55e, 0x3b82f6, 0x4f46e5, 0xa855f7];
-  const layerColor = (idx: number): [number, number, number] => {
-    const c = new Color(roygbiv[idx % roygbiv.length]);
+  const colorFromBottom = (layerFromBottom: number): [number, number, number] => {
+    const idx = Math.min(layerFromBottom, PRINT_PREVIEW_PALETTE.length - 1);
+    const c = new Color(PRINT_PREVIEW_PALETTE[idx]);
     return [c.r, c.g, c.b];
   };
-  const rimColorObj = new Color(0xd1d5db);
-  const rimRgb: [number, number, number] = [rimColorObj.r, rimColorObj.g, rimColorObj.b];
 
   const pointInPoly = (pt: Vector2, poly: Vector2[]): boolean => {
     let inside = false;
@@ -424,36 +428,29 @@ export function buildTerracedMeshGeometry(
     return inside;
   };
 
-  const levelIslands = entries.map((e, idx) => {
+  const levelIslands = entries.map((e) => {
     const srcIslands = e.islands && e.islands.length > 0 ? e.islands : [e.contour];
-    const islands = srcIslands
+    return srcIslands
       .map((c) => cleanContourPointsMm(c.points, mmPerUnit, centerRe))
       .filter((pts) => pts.length >= 3 && Math.abs(ShapeUtils.area(pts)) >= 0.25);
-    return {
-      islands,
-      rgb: layerColor(idx),
-    };
   });
 
-  const rawRings: Array<{ islands: Vector2[][]; rgb: [number, number, number] }> = [];
-  if (outerRimOffsetMm > 0 && levelIslands[0].islands.length > 0) {
-    rawRings.push({
-      islands: [expandContourOutward(levelIslands[0].islands[0], outerRimOffsetMm)],
-      rgb: rimRgb,
-    });
+  const rawRings: Vector2[][][] = [];
+  if (outerRimOffsetMm > 0 && levelIslands[0].length > 0) {
+    rawRings.push([expandContourOutward(levelIslands[0][0], outerRimOffsetMm)]);
   }
-  for (const l of levelIslands) {
-    if (l.islands.length > 0) {
-      rawRings.push(l);
+  for (const islands of levelIslands) {
+    if (islands.length > 0) {
+      rawRings.push(islands);
     }
   }
 
   const totalLayers = rawRings.length;
   // Dish sits directly on y = 0: deepest floor is at y = heightScale, top rim at y = totalLayers * heightScale
-  const rings = rawRings.map((r, idx) => ({
+  const rings = rawRings.map((islands, idx) => ({
     y: (totalLayers - idx) * heightScale,
-    islands: r.islands,
-    rgb: r.rgb,
+    islands,
+    rgb: colorFromBottom(totalLayers - 1 - idx),
   }));
 
   const addCap = (

@@ -27,6 +27,7 @@ npm run dev
 
 ## Other files
 
+- [docs/PROJECT.md](docs/PROJECT.md): project overview, modes, algorithms, and view system
 - [docs/WINDOWS.md](docs/WINDOWS.md): Windows / Git Bash setup (`gh`, Node via `fnm`)
 - [CLAUDE.md](CLAUDE.md): guidance for AI assistants
 - [docs/IDEAS.md](docs/IDEAS.md): future ideas and 3D printing / meshing notes
